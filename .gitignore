@@ -19,4 +19,4 @@ data/
 *.swo
 .DS_Store
 Thumbs.db
-config.py
+config_local.py
