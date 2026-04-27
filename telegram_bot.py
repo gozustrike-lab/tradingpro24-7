@@ -1,6 +1,6 @@
 """
-TradingPro24-7 - Telegram Bot v7.0
-Senales profesionales con emojis, imagen, chat + canal.
+TradingPro24-7 - Telegram Bot v7.0 (Windows Compatible)
+Senales profesionales con emojis reales, imagen, chat + canal.
 """
 
 import os
@@ -63,95 +63,99 @@ class TelegramBot:
             files={"photo": (fname, fdata, "image/png")})
 
     def enviar_senal(self, signal, chart_path=None):
+        """
+        Envia senal profesional con emojis al chat Y al canal.
+        """
         s = signal
         hora = time.strftime("%H:%M:%S")
-
         is_buy = s.get("type", "BUY") == "BUY"
         mode = s.get("mode", "TENDENCIA")
         modo_text = "RANGO S/R" if mode == "RANGO" else "TENDENCIA ICT SWEEP"
 
-        if is_buy:
-            lines = [
-                "\U0001F680 SE\u00D1AL DE TRADING",
-                "\U0001F7E2 COMPRA (BUY)",
-            ]
-        else:
-            lines = [
-                "\U0001F680 SE\u00D1AL DE TRADING",
-                "\U0001F534 VENTA (SELL)",
-            ]
+        # Construir mensaje con emojis
+        msg = []
+        msg.append("\U0001F680 SE\u00D1AL DE TRADING")
 
-        lines.append("\U0001F4CA Par: {}".format(s.get("symbol", "")))
-        lines.append("\U0001F552 Hora: {}".format(hora))
-        lines.append("\U0001F7E0 Modo: {}".format(modo_text))
-        lines.append("\U0001F522 Niveles:")
-        lines.append("\U0001F7E1 Entrada: {}".format(s.get("entry", "")))
+        if is_buy:
+            msg.append("\U0001F7E2 COMPRA (BUY)")
+        else:
+            msg.append("\U0001F534 VENTA (SELL)")
+
+        msg.append("\U0001F4CA Par: {}".format(s.get("symbol", "")))
+        msg.append("\U0001F552 Hora: {}".format(hora))
+        msg.append("\U0001F7E0 Modo: {}".format(modo_text))
+        msg.append("\U0001F522 Niveles:")
+        msg.append("\U0001F7E1 Entrada: {}".format(s.get("entry", "")))
 
         sl_pips = s.get("sl_pips", 0)
-        lines.append("\U0001F534 Stop Loss: {} ({} pips)".format(s.get("sl", ""), sl_pips))
+        msg.append("\U0001F534 Stop Loss: {} ({} pips)".format(s.get("sl", ""), sl_pips))
 
         tp_pips = s.get("tp_pips", 0)
-        lines.append("\U0001F7E2 Take Profit: {} (+{} pips)".format(s.get("tp", ""), tp_pips))
+        msg.append("\U0001F7E2 Take Profit: {} (+{} pips)".format(s.get("tp", ""), tp_pips))
 
         rr = s.get("rr", 0)
-        lines.append("\U0001F4C8 R:R: 1:{}".format(rr))
-        lines.append("\U0001F4F6 Score OHLC: {}/5".format(s.get("score", 0)))
+        msg.append("\U0001F4C8 R:R: 1:{}".format(rr))
+        msg.append("\U0001F4F6 Score OHLC: {}/5".format(s.get("score", 0)))
 
         ai_conf = s.get("ai_confidence", 0)
         ai_comm = s.get("ai_comment", "")
         if ai_conf >= 75:
-            ai_status = "\u2705 ({}%)".format(ai_conf)
+            ai_txt = "\u2705 ({}%)".format(ai_conf)
         elif ai_conf >= 50:
-            ai_status = "\u26A0\uFE0F ({}%)".format(ai_conf)
+            ai_txt = "\u26A0\uFE0F ({}%)".format(ai_conf)
         else:
-            ai_status = "\u274C ({}%)".format(ai_conf)
-        lines.append("\U0001F916 AI Vision: {} {}".format(ai_status, ai_comm))
+            ai_txt = "\u274C ({}%)".format(ai_conf)
+        msg.append("\U0001F916 AI Vision: {} {}".format(ai_txt, ai_comm))
 
         sweep = s.get("sweep_pips", 0)
         rejection = s.get("rejection", "fuerte")
-        lines.append("Sweep: {} pips | Rechazo: {}".format(sweep, rejection))
+        msg.append("Sweep: {} pips | Rechazo: {}".format(sweep, rejection))
 
-        lines.append("\u2705 Condiciones:")
+        msg.append("\u2705 Condiciones:")
         for passed, text in s.get("conditions", []):
-            check = "\u2705" if passed else "\u274C"
-            lines.append("{} {}".format(check, text))
+            if passed:
+                msg.append("\u2705 {}".format(text))
+            else:
+                msg.append("\u274C {}".format(text))
 
         kz = s.get("killzone", "Fuera de killzone")
-        lines.append("\U0001F3AF Killzone: {}".format(kz))
+        msg.append("\U0001F3AF Killzone: {}".format(kz))
 
         adx = s.get("adx_value", 0)
         if adx > 25:
-            adx_text = "{} (fuerte)".format(adx)
+            adx_txt = "{} (fuerte)".format(adx)
         elif adx > 20:
-            adx_text = "{} (moderada)".format(adx)
+            adx_txt = "{} (moderada)".format(adx)
         else:
-            adx_text = "{} (lateral)".format(adx)
-        lines.append("ADX: {}".format(adx_text))
-        lines.append("Bot TradingPro24-7 \u2014 ICT Liquidity Sweep")
+            adx_txt = "{} (lateral)".format(adx)
+        msg.append("ADX: {}".format(adx_txt))
+        msg.append("Bot TradingPro24-7 \u2014 ICT Liquidity Sweep")
 
-        mensaje = "\n".join(lines)
+        mensaje = "\n".join(msg)
 
-        # Enviar al chat privado
+        # Enviar al CHAT PRIVADO con imagen
         try:
             if chart_path and os.path.exists(chart_path):
                 self.enviar_foto(chart_path, mensaje, self.chat_id)
+                logger.info("Senal enviada al CHAT con imagen")
             else:
                 self.enviar_mensaje(mensaje, self.chat_id)
-            logger.info("Senal enviada al chat")
+                logger.info("Senal enviada al CHAT")
         except Exception as e:
-            logger.error("Error chat: {}".format(e))
+            logger.error("Error al chat: {}".format(e))
 
-        # Enviar al canal
+        # Enviar al CANAL con imagen
         if self.channel_id:
             try:
                 time.sleep(1)
                 if chart_path and os.path.exists(chart_path):
                     self.enviar_foto(chart_path, mensaje, self.channel_id)
+                    logger.info("Senal enviada al CANAL con imagen")
                 else:
                     self.enviar_mensaje(mensaje, self.channel_id)
-                logger.info("Senal enviada al CANAL")
+                    logger.info("Senal enviada al CANAL")
             except Exception as e:
-                logger.error("Error canal: {}".format(e))
+                logger.error("Error al canal: {}".format(e))
 
     def enviar_sweep_alert(self, symbol, timeframe, sweep_info, chart_path=None):
         hora = time.strftime("%H:%M:%S")
@@ -164,8 +168,12 @@ class TelegramBot:
             "Pips: {}\n"
             "Esperando confirmacion...\n"
             "Bot TradingPro24-7"
-        ).format(symbol, hora, sweep_info.get("direction", ""),
-                 sweep_info.get("level", 0), sweep_info.get("sweep_pips", 0))
+        ).format(
+            symbol, hora,
+            sweep_info.get("direction", ""),
+            sweep_info.get("level", 0),
+            sweep_info.get("sweep_pips", 0)
+        )
         try:
             if chart_path and os.path.exists(chart_path):
                 self.enviar_foto(chart_path, msg, self.chat_id)
@@ -178,7 +186,7 @@ class TelegramBot:
         try:
             self.enviar_mensaje(text, self.chat_id)
         except Exception as e:
-            logger.error("Error: {}".format(e))
+            logger.error("Error status: {}".format(e))
 
     def enviar_error(self, text):
         try:
