@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 #  TRADING BOT HÍBRIDO — MAIN ENGINE
-#  Orquestador principal del sistema
+#  Orquestador principal — OHLC + Sweep Alerts + AI Vision
 # ═══════════════════════════════════════════════════════════════
 
 import time
@@ -43,10 +43,9 @@ class TradingBot:
         logger.info("=" * 60)
         logger.info("  TRADINGPRO24-7 — BOT HÍBRIDO")
         logger.info("  Estrategia: ICT Liquidity Sweep")
-        logger.info("  Modo: OHLC Filters + AI Vision Confirmation")
+        logger.info("  Modo: OHLC + Sweep Alerts + AI Vision")
         logger.info("=" * 60)
 
-        # Componentes
         self.mt5 = MT5Connection()
         self.data_feed = None
         self.strategy = None
@@ -57,30 +56,26 @@ class TradingBot:
         self.copy_trading = CopyTradingManager()
         self.charts = ChartGenerator()
 
-        # Estado
         self.running = False
         self.signals_sent_today = 0
         self.signals_confirmed_today = 0
+        self.sweeps_detected_today = 0
         self.trades_today = 0
         self.daily_pnl = 0.0
+        self.cycle_count = 0
 
     def initialize(self) -> bool:
         """Inicializa todos los componentes del bot."""
         logger.info("Iniciando bot...")
 
-        # 1. Conectar MT5
         if not self.mt5.initialize():
             logger.error("No se pudo conectar a MetaTrader 5")
             logger.error("Soluciones: (1) Ejecutar como Admin, (2) MT5 64-bit, (3) Mover fuera de OneDrive")
             return False
 
-        # 2. Inicializar data feed
         self.data_feed = DataFeed(self.mt5)
-
-        # 3. Inicializar estrategia
         self.strategy = StrategyEngine(self.data_feed)
 
-        # 4. Inicializar AI Vision (si está configurado)
         if AI_VISION["enabled"] and "TU_" not in OPENROUTER_API_KEY:
             self.ai = AIVision()
             logger.info("AI Vision habilitado (Gemma 4 31B)")
@@ -88,7 +83,6 @@ class TradingBot:
             self.ai = None
             logger.warning("AI Vision deshabilitado (sin API key)")
 
-        # 5. Notificar inicio por Telegram
         if self.telegram.enabled:
             self.telegram.send_startup_message()
 
@@ -104,10 +98,17 @@ class TradingBot:
 
         self.running = True
         logger.info("Bot en ejecución... Presiona Ctrl+C para detener.")
+        logger.info("Buscando: Sweep Alerts + Señales Completas con AI Vision")
 
         try:
             while self.running:
                 self._check_cycle()
+                self.cycle_count += 1
+                # Heartbeat cada 10 ciclos (10 minutos)
+                if self.cycle_count % 10 == 0:
+                    logger.info(f"Ciclo #{self.cycle_count} — Monitoreando activo...")
+                else:
+                    print(".", end="", flush=True)
                 time.sleep(BOT["check_interval"])
 
         except KeyboardInterrupt:
@@ -120,7 +121,6 @@ class TradingBot:
 
     def _check_cycle(self):
         """Ejecuta un ciclo de análisis."""
-        # Verificar mercado abierto
         if not self.data_feed.is_market_open():
             return
 
@@ -128,32 +128,56 @@ class TradingBot:
         if balance is None:
             balance = 0
 
-        # Analizar cada par
         for symbol in FOREX_PAIRS:
             try:
+                self._detect_sweep_alert(symbol, balance)
                 self._analyze_pair(symbol, balance)
             except Exception as e:
                 logger.error(f"Error analizando {symbol}: {e}")
 
-    def _analyze_pair(self, symbol: str, balance: float):
-        """Analiza un par de divisas buscando señales."""
+    def _detect_sweep_alert(self, symbol: str, balance: float):
+        """Detecta sweep en curso y envía alerta temprana."""
+        sweep = self.strategy.detect_sweep(symbol)
 
-        # 1. Ejecutar estrategia OHLC
+        if sweep is None:
+            return
+
+        logger.info(
+            f"Sweep detectado: {symbol} {sweep.get('direction')} "
+            f"(barrió {sweep.get('sweep_level')})"
+        )
+
+        self.sweeps_detected_today += 1
+
+        # Generar gráfico para la alerta
+        df = self.data_feed.get_ohlc(symbol, num_candles=100)
+        chart_path = self.charts.generate_chart(df, symbol, {
+            "signal": "SELL" if sweep.get("direction") == "SHORT" else "BUY",
+            "current_price": sweep.get("current_price"),
+        })
+
+        # Enviar alerta con imagen
+        if self.telegram.enabled:
+            self.telegram.send_sweep_alert(sweep, chart_path)
+
+    def _analyze_pair(self, symbol: str, balance: float):
+        """Analiza un par de divisas buscando señales completas."""
+
         signal = self.strategy.analyze(symbol)
 
         if signal is None or not signal.get("passed"):
-            return  # No hay señal
+            return
 
         logger.info(
             f"Señal detectada: {symbol} {signal.get('signal')} "
             f"({signal.get('score')}/{signal.get('max_score')})"
         )
 
-        # 2. Generar gráfico
+        # Generar gráfico
         df = self.data_feed.get_ohlc(symbol, num_candles=100)
         chart_path = self.charts.generate_chart(df, symbol, signal)
 
-        # 3. Calcular SL/TP y posición
+        # Calcular SL/TP y posición
         current_price = signal.get("current_price", 0)
         direction = signal.get("signal")
 
@@ -163,7 +187,6 @@ class TradingBot:
         levels = self.risk.calculate_sl_tp(current_price, direction, symbol)
         position = self.risk.calculate_position_size(balance, symbol, levels["sl_pips"])
 
-        # Agregar info a la señal
         signal.update({
             "symbol": symbol,
             "sl_price": levels["sl_price"],
@@ -172,7 +195,7 @@ class TradingBot:
             "risk_amount": position["risk_amount"],
         })
 
-        # 4. Confirmación AI Vision
+        # Confirmación AI Vision
         ai_confirmation = {"confirmed": False, "confidence": 0}
 
         if self.ai and chart_path:
@@ -185,29 +208,30 @@ class TradingBot:
                         f"AI rechazó la señal: {symbol} "
                         f"(confianza: {ai_confirmation.get('confidence', 0):.0%})"
                     )
-                return  # AI no confirmó, no enviar señal
+                return
         elif not self.ai:
-            # Sin AI, enviar si score >= 5 (máximo)
             if signal.get("score", 0) < 5:
                 logger.info(f"Sin AI, se requiere score perfecto (5/5) para {symbol}")
                 return
-            ai_confirmation = {"confirmed": True, "confidence": 1.0, "sweep_quality": "N/A (sin AI)", "rejection_strength": "N/A (sin AI)"}
+            ai_confirmation = {
+                "confirmed": True, "confidence": 1.0,
+                "sweep_quality": "N/A (sin AI)",
+                "rejection_strength": "N/A (sin AI)"
+            }
 
-        # 5. Verificar riesgo
+        # Verificar riesgo
         risk_check = self.risk.can_trade(balance)
         if not risk_check["allowed"]:
             logger.warning(f"Riesgo bloquea operación: {risk_check['reason']}")
             return
 
-        # 6. Enviar señal
+        # Enviar señal completa con imagen
         self.signals_sent_today += 1
         self.signals_confirmed_today += 1
 
-        # Enviar por Telegram
         if self.telegram.enabled:
-            self.telegram.send_signal(signal)
+            self.telegram.send_signal_with_chart(signal, chart_path)
 
-        # Log
         self.logger.log_signal(signal)
 
         logger.info(
@@ -217,7 +241,7 @@ class TradingBot:
             f"AI={ai_confirmation.get('confidence', 0):.0%}"
         )
 
-        # 7. Registrar en portafolio copy trading
+        # Registrar en portafolio copy trading
         self.copy_trading.add_trade_to_portfolio({
             "symbol": symbol,
             "signal": direction,
@@ -235,12 +259,11 @@ class TradingBot:
             return
 
         stats = self.logger.get_stats()
-        portfolio = self.copy_trading.get_portfolio_summary()
-        readiness = self.copy_trading.is_ready_for_signals()
 
         summary = {
             "signals_sent": self.signals_sent_today,
             "signals_confirmed": self.signals_confirmed_today,
+            "sweeps_detected": self.sweeps_detected_today,
             "trades_taken": self.trades_today,
             "daily_pnl": self.daily_pnl,
             "win_rate": stats.get("win_rate", 0),
@@ -249,14 +272,6 @@ class TradingBot:
         }
 
         self.telegram.send_daily_summary(summary)
-
-        if readiness["ready"]:
-            self.telegram.send_alert(
-                "MQL5 SIGNALS READY",
-                "Tu portafolio tiene suficientes datos para publicar como señal en MQL5. "
-                "Los inversores pueden copiar tus operaciones automáticamente.",
-                "SUCCESS"
-            )
 
 
 # ═══════════════════════════════════════════════════════════════

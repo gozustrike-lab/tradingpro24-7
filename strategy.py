@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 #  TRADING BOT HÍBRIDO — STRATEGY ENGINE
-#  5 condiciones matemáticas OHLC + Scoring
+#  5 condiciones matemáticas OHLC + Scoring + Sweep Detection
 # ═══════════════════════════════════════════════════════════════
 
 import pandas as pd
@@ -20,7 +20,8 @@ class StrategyEngine:
     def __init__(self, data_feed: DataFeed):
         self.data_feed = data_feed
         self.params = STRATEGY
-        self.last_signal_time = {}  # Evitar señales duplicadas
+        self.last_signal_time = {}
+        self.last_sweep_time = {}
 
     def analyze(self, symbol: str):
         """
@@ -29,20 +30,16 @@ class StrategyEngine:
         Returns:
             dict con señal o None si no hay oportunidad
         """
-        # 1. Verificar sesión activa
         if not self._is_session_active(symbol):
             return None
 
-        # 2. Obtener datos OHLC
         df = self.data_feed.get_ohlc(symbol, num_candles=100)
         if df is None or len(df) < 50:
             return None
 
-        # 3. Verificar tiempo mínimo entre señales
         if not self._check_signal_cooldown(symbol):
             return None
 
-        # 4. Ejecutar las 5 condiciones
         result = self._evaluate_conditions(symbol, df)
 
         if result:
@@ -53,26 +50,108 @@ class StrategyEngine:
 
         return result
 
-    def _evaluate_conditions(self, symbol: str, df: pd.DataFrame):
+    def detect_sweep(self, symbol: str):
         """
-        Evalúa las 5 condiciones matemáticas.
+        Detecta sweep de liquidez en curso (solo condiciones 1-3).
+
+        Esto envía alertas tempranas ANTES de la confirmación completa.
 
         Returns:
-            dict con score, condiciones individuales, dirección
+            dict con info del sweep o None
         """
+        if not self._is_session_active(symbol):
+            return None
+
+        # Cooldown para sweep alerts (10 min entre alerts del mismo par)
+        if not self._check_sweep_cooldown(symbol):
+            return None
+
+        df = self.data_feed.get_ohlc(symbol, num_candles=100)
+        if df is None or len(df) < 50:
+            return None
+
+        pip_value = self.params["pip_values"].get(symbol, 0.0001)
+        digits = self.params["digits"].get(symbol, 5)
+        tolerance_pips = self.params["sweep_pip_tolerance"]
+
+        # Calcular EMAs
+        ema_fast = df['close'].ewm(span=self.params["ema_fast"], adjust=False).mean()
+        ema_slow = df['close'].ewm(span=self.params["ema_slow"], adjust=False).mean()
+
+        uptrend = ema_fast.iloc[-1] > ema_slow.iloc[-1]
+        downtrend = ema_fast.iloc[-1] < ema_slow.iloc[-1]
+
+        if not uptrend and not downtrend:
+            return None
+
+        direction = "LONG" if uptrend else "SHORT"
+        current = df.iloc[-1]
+
+        # Verificar pullback
+        recent_highs = df['high'].iloc[-self.params["pullback_candles"]:]
+        recent_lows = df['low'].iloc[-self.params["pullback_candles"]:]
+        pullback = max(recent_highs) - min(recent_lows)
+        pullback_pips = pullback / pip_value
+
+        if pullback_pips < self.params["pullback_min_pips"]:
+            return None
+
+        # Verificar sweep
+        if direction == "LONG":
+            prev_low = df['low'].iloc[-self.params["lookback_candles"]:-3].min()
+            current_low = current['low']
+            sweep_pips = (prev_low - current_low) / pip_value
+
+            if sweep_pips >= -tolerance_pips:
+                self.last_sweep_time[symbol] = datetime.now()
+                return {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "sweep_level": round(prev_low, digits),
+                    "current_price": round(current['close'], digits),
+                    "current_low": round(current_low, digits),
+                    "sweep_pips": round(sweep_pips, 1),
+                    "score": 2,
+                    "trend_detail": f"EMA{self.params['ema_fast']} > EMA{self.params['ema_slow']} (alcista)" if uptrend else f"EMA{self.params['ema_fast']} < EMA{self.params['ema_slow']} (bajista)",
+                    "pullback_pips": round(pullback_pips, 1),
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+        elif direction == "SHORT":
+            prev_high = df['high'].iloc[-self.params["lookback_candles"]:-3].max()
+            current_high = current['high']
+            sweep_pips = (current_high - prev_high) / pip_value
+
+            if sweep_pips >= -tolerance_pips:
+                self.last_sweep_time[symbol] = datetime.now()
+                return {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "sweep_level": round(prev_high, digits),
+                    "current_price": round(current['close'], digits),
+                    "current_high": round(current_high, digits),
+                    "sweep_pips": round(sweep_pips, 1),
+                    "score": 2,
+                    "trend_detail": f"EMA{self.params['ema_fast']} < EMA{self.params['ema_slow']} (bajista)" if downtrend else f"EMA{self.params['ema_fast']} > EMA{self.params['ema_slow']} (alcista)",
+                    "pullback_pips": round(pullback_pips, 1),
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+        return None
+
+    def _evaluate_conditions(self, symbol: str, df: pd.DataFrame):
+        """Evalúa las 5 condiciones matemáticas."""
+
         pip_value = self.params["pip_values"].get(symbol, 0.0001)
         digits = self.params["digits"].get(symbol, 5)
 
-        # Datos actuales y anteriores
         current = df.iloc[-1]
         prev_1 = df.iloc[-2] if len(df) > 1 else None
-        lookback = max(2, len(df) - self.params["lookback_candles"])
-        prev_n = df.iloc[lookback] if len(df) > self.params["lookback_candles"] else df.iloc[2]
 
         score = 0
         conditions = {}
 
-        # ─── CONDICIÓN 1: Tendencia (EMA 20 > EMA 50) ───
+        # ─── CONDICIÓN 1: Tendencia ───
         ema_fast = df['close'].ewm(span=self.params["ema_fast"], adjust=False).mean()
         ema_slow = df['close'].ewm(span=self.params["ema_slow"], adjust=False).mean()
 
@@ -115,7 +194,6 @@ class StrategyEngine:
         tolerance_pips = self.params["sweep_pip_tolerance"]
 
         if direction == "LONG":
-            # Buscar low previo que fue barrido
             prev_low = df['low'].iloc[-self.params["lookback_candles"]:-3].min()
             current_low = current['low']
             sweep_pips = (prev_low - current_low) / pip_value
@@ -131,7 +209,6 @@ class StrategyEngine:
                 score += 1
 
         elif direction == "SHORT":
-            # Buscar high previo que fue barrido
             prev_high = df['high'].iloc[-self.params["lookback_candles"]:-3].max()
             current_high = current['high']
             sweep_pips = (current_high - prev_high) / pip_value
@@ -247,4 +324,11 @@ class StrategyEngine:
             elapsed = (datetime.now() - self.last_signal_time[symbol]).total_seconds()
             return elapsed >= min_interval
 
+        return True
+
+    def _check_sweep_cooldown(self, symbol: str) -> bool:
+        """Verifica cooldown para alertas de sweep (10 minutos)."""
+        if symbol in self.last_sweep_time:
+            elapsed = (datetime.now() - self.last_sweep_time[symbol]).total_seconds()
+            return elapsed >= 600  # 10 minutos entre sweep alerts
         return True
