@@ -86,6 +86,19 @@ class TelegramBot:
                     return True
                 else:
                     logger.error(f"Telegram photo error {response.status_code}: {response.text[:200]}")
+                    # Fallback: reintentar sin parse_mode
+                    try:
+                        img_file.seek(0)
+                        data2 = {
+                            "chat_id": self.chat_id,
+                            "caption": caption,
+                        }
+                        response2 = requests.post(url, files=files, data=data2, timeout=30)
+                        if response2.status_code == 200:
+                            logger.info(f"Imagen enviada (sin formato): {os.path.basename(image_path)}")
+                            return True
+                    except Exception:
+                        pass
                     # Fallback: enviar solo el texto
                     if caption:
                         self.send_message(caption)
@@ -135,11 +148,11 @@ class TelegramBot:
         if direction == "LONG":
             dir_emoji = "🟢"
             dir_text = "ALCISTA (BUSCA COMPRA)"
-            sweep_text = f"Precio barrió low previo: <code>{sweep_level}</code>"
+            sweep_text = f"Precio barrió low previo: {sweep_level}"
         else:
             dir_emoji = "🔴"
             dir_text = "BAJISTA (BUSCA VENTA)"
-            sweep_text = f"Precio barrió high previo: <code>{sweep_level}</code>"
+            sweep_text = f"Precio barrió high previo: {sweep_level}"
 
         message = f"""
 <b>⚠️ SWEEP DE LIQUIDEZ DETECTADO</b>
@@ -150,7 +163,7 @@ class TelegramBot:
 
 <b>🔍 Detalles:</b>
 {sweep_text}
-💰 <b>Precio actual:</b> <code>{current_price}</code>
+💰 <b>Precio actual:</b> {current_price}
 📈 <b>Tendencia:</b> {trend}
 📊 <b>Score parcial:</b> {score}/5
 
@@ -212,9 +225,9 @@ class TelegramBot:
 ⏰ <b>Hora:</b> {now}
 
 <b>🎯 Niveles:</b>
-💰 Entrada: <code>{price}</code>
-🛑 Stop Loss: <code>{sl}</code>
-📈 Take Profit: <code>{tp}</code>
+💰 Entrada: {price}
+🛑 Stop Loss: {sl}
+📈 Take Profit: {tp}
 📏 R:R: <b>1:{rr:.1f}</b>
 📦 Lotes: <b>{lots}</b>
 
