@@ -99,19 +99,19 @@ class TradingBot:
             self.ai = None
             logger.warning("AI Vision deshabilitado (sin API key)")
 
-        # Mensaje de inicio
+        # Mensaje de inicio con emojis
         channel_status = "Canal activo" if TELEGRAM_CHANNEL_ID else "Canal no configurado"
         startup_msg = (
-            "TradingPro24-7 Pro v7.0 - INICIADO\n"
-            "{}\n"
-            "Modo: ICT Sweep + Rango + FVG + OB + Killzones\n"
-            "Monitoreando {} pares en M15\n"
-            "Killzones: London Open, NY Open, London Close\n"
-            "FVG Detection: Activo\n"
-            "Order Blocks: Activo\n"
-            "Multi-TF (M15+H1): Activo\n"
-            "Graficos con cada senal\n"
-            "{}"
+            "TradingPro24-7 Pro v7.0 \u2014 INICIADO\n"
+            "\U0001F552 {}\n"
+            "\U0001F1EE\U0001F1F9 Modo: ICT Sweep + Rango + FVG + OB + Killzones\n"
+            "\U0001F4CA Monitoreando {} pares en M15\n"
+            "\U0001F3AF Killzones: London Open, NY Open, London Close\n"
+            "\U0001F4A7 FVG Detection: Activo\n"
+            "\U0001F535 Order Blocks: Activo\n"
+            "\U0001F50D Multi-TF (M15+H1): Activo\n"
+            "\U0001F4C8 Gr\u00E1ficos con cada se\u00F1al\n"
+            "\u2705 {}"
         ).format(
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             len(FOREX_PAIRS),
