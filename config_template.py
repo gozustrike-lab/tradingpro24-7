@@ -1,7 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HÍBRIDO — CONFIGURACIÓN v5.0
-#  MODO 1: ICT Sweep (tendencia)
-#  MODO 2: Rango/Lateral (soporte/resistencia)
+#  TRADING BOT HÍBRIDO — CONFIGURACIÓN v6.0 PROFESSIONAL
+#  ICT Sweep + Rango + Killzones + FVG + Order Blocks + Multi-TF
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -20,7 +19,7 @@ TELEGRAM_BOT_TOKEN = "TU_BOT_TOKEN_AQUÍ"
 TELEGRAM_CHAT_ID = "TU_CHAT_ID_AQUÍ"
 
 # Telegram Channel ID (canal privado para señales confirmadas)
-# Ejemplo: "-1001234567890" — se necesita agregar el bot como admin al canal
+# Ejemplo: "-1001234567890"
 # TELEGRAM_CHANNEL_ID = "-100TU_CHANNEL_ID_AQUÍ"
 
 # ─── MODELO AI VISION ────────────────────────────────────────
@@ -41,8 +40,8 @@ TIMEFRAME = "M15"
 MT5_TIMEFRAME = 15
 
 # ─── PARÁMETROS DE LA ESTRATEGIA ─────────────────────────────
-# Compartidos entre ambos modos
 STRATEGY = {
+    # EMAs para detección de tendencia
     "ema_fast": 20,
     "ema_slow": 50,
     "pullback_candles": 3,
@@ -57,6 +56,34 @@ STRATEGY = {
     "trend_sl_pips": 18,
     "trend_tp_pips": 45,
 
+    # ═══ KILLZONES ICT ═══
+    # Solo opera en horas de alta probabilidad
+    # London Open: 7-10 UTC (2-5AM EST)
+    # NY Open: 12-15 UTC (7-10AM EST)
+    # London Close: 15-17 UTC (10AM-12PM EST)
+    "killzones": {
+        "enabled": True,
+        "zones": {
+            "london_open": {"start": 7, "end": 10},
+            "ny_open": {"start": 12, "end": 15},
+            "london_close": {"start": 15, "end": 17},
+        }
+    },
+
+    # ═══ FVG (FAIR VALUE GAP) ═══
+    # Tamaño mínimo de FVG para considerar
+    "fvg_min_pips": 3,
+
+    # ═══ ORDER BLOCKS ═══
+    # Cuántas velas mirar para encontrar el OB
+    "ob_lookback": 15,
+    # Cuerpo mínimo del OB en pips
+    "ob_min_body_pips": 5,
+
+    # ═══ MULTI-TIMEFRAME ═══
+    # Confirmar dirección en H1 antes de enviar señal
+    "multi_tf_enabled": True,
+
     "pip_values": {
         "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDJPY": 0.01,
         "AUDUSD": 0.0001, "USDCAD": 0.0001, "USDCHF": 0.0001,
@@ -67,21 +94,13 @@ STRATEGY = {
     },
 
     # ═══ MODO RANGO/LATERAL ═══
-    # Se activa automáticamente cuando no hay tendencia
     "range_mode": {
-        # Cuántas velas mirar para encontrar soporte/resistencia
         "sr_lookback": 30,
-        # Zona de detección: cuántos pips cerca de S/R para señalar
         "zone_pips": 5,
-        # Rango mínimo en pips para considerar que hay rango válido
         "min_range_pips": 20,
-        # Mecha mínima para confirmar rechazo en S/R
         "wick_min_pips": 3,
-        # Cierre fuerte mínimo en porcentaje
         "close_percentile": 70,
-        # Score mínimo de 5 para activar señal
         "min_score": 4,
-        # TP y SL para operaciones de rango (1:1 ratio)
         "tp_pips": 20,
         "sl_pips": 15,
     },
@@ -116,11 +135,11 @@ SESSIONS = {
 
 PAIR_SESSIONS = {
     "EURUSD": ["london", "new_york"],
-    "GBPUSD": ["london"],
-    "USDJPY": ["new_york"],
-    "AUDUSD": ["london"],
-    "USDCAD": ["new_york"],
-    "USDCHF": ["london"],
+    "GBPUSD": ["london", "new_york"],
+    "USDJPY": ["london", "new_york"],
+    "AUDUSD": ["london", "new_york"],
+    "USDCAD": ["london", "new_york"],
+    "USDCHF": ["london", "new_york"],
 }
 
 # ─── AI VISION CONFIG ────────────────────────────────────────

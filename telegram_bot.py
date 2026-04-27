@@ -24,15 +24,25 @@ class TelegramBot:
                             "TU_" not in str(self.token) and
                             "TU_" not in str(self.chat_id))
 
-    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+        # Canal privado para señales (opcional)
+        try:
+            from config import TELEGRAM_CHANNEL_ID
+            self.channel_id = TELEGRAM_CHANNEL_ID
+            self.channel_enabled = bool(self.channel_id and "TU_" not in str(self.channel_id))
+        except (ImportError, AttributeError):
+            self.channel_id = None
+            self.channel_enabled = False
+
+    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None) -> bool:
         """Envía un mensaje de texto por Telegram."""
-        if not self.enabled:
+        target_id = chat_id or self.chat_id
+        if not self.enabled and not chat_id:
             logger.warning("Telegram no configurado (faltan credenciales)")
             return False
 
         url = f"{self.BASE_URL}/sendMessage"
         payload = {
-            "chat_id": self.chat_id,
+            "chat_id": target_id,
             "text": text,
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
@@ -50,18 +60,10 @@ class TelegramBot:
             logger.error(f"Error enviando mensaje Telegram: {e}")
             return False
 
-    def send_photo(self, image_path: str, caption: str = "") -> bool:
-        """
-        Envía una imagen con caption por Telegram.
-
-        Args:
-            image_path: Ruta a la imagen
-            caption: Texto opcional debajo de la imagen
-
-        Returns:
-            True si se envió correctamente
-        """
-        if not self.enabled:
+    def send_photo(self, image_path: str, caption: str = "", chat_id: str = None) -> bool:
+        """Envía una imagen con caption por Telegram."""
+        target_id = chat_id or self.chat_id
+        if not self.enabled and not chat_id:
             return False
 
         if not os.path.exists(image_path):
@@ -74,7 +76,7 @@ class TelegramBot:
             with open(image_path, "rb") as img_file:
                 files = {"photo": img_file}
                 data = {
-                    "chat_id": self.chat_id,
+                    "chat_id": target_id,
                     "caption": caption,
                     "parse_mode": "HTML",
                 }
@@ -111,22 +113,24 @@ class TelegramBot:
             return False
 
     def send_signal_with_chart(self, signal_data: dict, chart_path: str = None) -> bool:
-        """
-        Envía una señal de trading completa con gráfico.
-
-        Args:
-            signal_data: dict con toda la info de la señal
-            chart_path: Ruta a la imagen del gráfico
-        """
-        # Construir mensaje de la señal
+        """Envía señal completa con gráfico (chat privado + canal si está configurado)."""
         message = self._format_signal_message(signal_data)
 
-        # Enviar imagen con caption
+        # Enviar al chat privado
         if chart_path and os.path.exists(chart_path):
-            return self.send_photo(chart_path, caption=message)
+            sent = self.send_photo(chart_path, caption=message)
         else:
-            # Sin imagen, enviar solo texto
-            return self.send_message(message)
+            sent = self.send_message(message)
+
+        # También enviar al canal privado si está configurado
+        if self.channel_enabled:
+            if chart_path and os.path.exists(chart_path):
+                self.send_photo(chart_path, caption=message, chat_id=self.channel_id)
+            else:
+                self.send_message(message, chat_id=self.channel_id)
+            logger.info(f"Señal enviada al canal: {self.channel_id}")
+
+        return sent
 
     def send_sweep_alert(self, sweep_data: dict, chart_path: str = None) -> bool:
         """
@@ -266,21 +270,39 @@ class TelegramBot:
 📏 R:R: <b>1:{rr:.1f}</b>
 📦 Lotes: <b>{lots}</b>"""
 
+        # FVG info
+        fvg = signal_data.get("fvg")
+        ob = signal_data.get("order_block")
+        mtf = signal_data.get("mtf_confirmed", True)
+
         message += f"""
 
 <b>📊 Score OHLC:</b> {score}/{max_score}
 🤖 <b>AI Vision:</b> {ai_status} ({ai_conf:.0%})
-    Sweep: {ai_sweep} | Rechazo: {ai_rejection}
+    Sweep: {ai_sweep} | Rechazo: {ai_rejection}"""
 
-<b>⚡ Condiciones:</b>"""
+        # FVG
+        if fvg:
+            message += f"\n🔷 <b>FVG:</b> {fvg.get('type', '')} ({fvg.get('size_pips', 0):.1f} pips)"
+
+        # Order Block
+        if ob:
+            message += f"\n🧱 <b>Order Block:</b> {ob.get('type', '')} @ {ob.get('level', '')}"
+
+        # Multi-TF
+        mtf_emoji = "✅" if mtf else "❌"
+        message += f"\n⏱️ <b>H1 Confirmación:</b> {mtf_emoji}"
+
+        message += "\n\n<b>⚡ Condiciones:</b>"
 
         conditions = signal_data.get("conditions", {})
         for key, cond in conditions.items():
             emoji = "✅" if cond.get("passed") else "❌"
             detail = cond.get("detail", "")
-            message += f"\n{emoji} {detail}"
+            if detail:
+                message += f"\n{emoji} {detail}"
 
-        message += f"\n\n<i>Bot TradingPro24-7 — ICT + Rango</i>"
+        message += f"\n\n<i>TradingPro24-7 Pro v6.0 — ICT + FVG + OB</i>"
         return message.strip()
 
     def send_alert(self, title: str, message: str, alert_type: str = "INFO") -> bool:
@@ -327,11 +349,17 @@ class TelegramBot:
     def send_startup_message(self) -> bool:
         """Envía mensaje de inicio del bot."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"""<b>🤖 Bot TradingPro24-7 — INICIADO</b>
+        channel_status = "✅ Canal activo" if self.channel_enabled else "❌ Canal no configurado"
+        message = f"""<b>🤖 TradingPro24-7 Pro v6.0 — INICIADO</b>
 ⏰ {now}
-📊 Modo: Híbrido (OHLC + AI Vision + Sweep Alerts)
-📡 Monitoreando 6 pares en M15...
-📸 Los gráficos se envían con cada señal
+📊 Modo: ICT Sweep + Rango + FVG + OB + Killzones
+📡 Monitoreando 6 pares en M15
+⏱️ Killzones: London Open, NY Open, London Close
+🔷 FVG Detection: Activo
+🧱 Order Blocks: Activo
+🔍 Multi-TF (M15+H1): Activo
+📸 Graficos con cada senal
+{channel_status}
 
 <i>El bot analiza el mercado cada 60 segundos.</i>"""
 
