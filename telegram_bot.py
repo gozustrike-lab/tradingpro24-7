@@ -1,366 +1,187 @@
-# ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HÍBRIDO — TELEGRAM BOT
-#  Envía señales, alertas de sweep y gráficos por Telegram
-# ═══════════════════════════════════════════════════════════════
+"""
+TradingPro24-7 - Telegram Bot v7.0
+Senales profesionales con emojis, imagen, chat + canal.
+"""
 
-import requests
 import os
+import json
+import urllib.request
+import time
 import logging
-from datetime import datetime
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramBot:
-    """Bot de Telegram para enviar señales y alertas."""
 
-    BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    def __init__(self, token, chat_id, channel_id=None):
+        self.token = token
+        self.chat_id = chat_id
+        self.channel_id = channel_id
+        self.base_url = "https://api.telegram.org/bot{}".format(token)
 
-    def __init__(self):
-        self.token = TELEGRAM_BOT_TOKEN
-        self.chat_id = TELEGRAM_CHAT_ID
-        self.enabled = bool(self.token and self.chat_id and
-                            "TU_" not in str(self.token) and
-                            "TU_" not in str(self.chat_id))
-
-        # Canal privado para señales (opcional)
+    def _request(self, method, data=None, files=None):
+        url = "{}/{}".format(self.base_url, method)
         try:
-            from config import TELEGRAM_CHANNEL_ID
-            self.channel_id = TELEGRAM_CHANNEL_ID
-            self.channel_enabled = bool(self.channel_id and "TU_" not in str(self.channel_id))
-        except (ImportError, AttributeError):
-            self.channel_id = None
-            self.channel_enabled = False
-
-    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None) -> bool:
-        """Envía un mensaje de texto por Telegram."""
-        target_id = chat_id or self.chat_id
-        if not self.enabled and not chat_id:
-            logger.warning("Telegram no configurado (faltan credenciales)")
-            return False
-
-        url = f"{self.BASE_URL}/sendMessage"
-        payload = {
-            "chat_id": target_id,
-            "text": text,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": True,
-        }
-
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            if response.status_code == 200:
-                logger.debug("Mensaje enviado a Telegram")
-                return True
+            if files:
+                boundary = "----Boundary7MA4YWxkTrZu0gW"
+                body = b""
+                for field, value in data.items():
+                    body += "--{}\r\n".format(boundary).encode()
+                    body += 'Content-Disposition: form-data; name="{}"\r\n\r\n'.format(field).encode()
+                    body += str(value).encode() + b"\r\n"
+                for field, (fname, fdata, ftype) in files.items():
+                    body += "--{}\r\n".format(boundary).encode()
+                    body += 'Content-Disposition: form-data; name="{}"; filename="{}"\r\n'.format(field, fname).encode()
+                    body += "Content-Type: {}\r\n\r\n".format(ftype).encode()
+                    body += fdata + b"\r\n"
+                body += "--{}--\r\n".format(boundary).encode()
+                req = urllib.request.Request(url, data=body)
+                req.add_header("Content-Type", "multipart/form-data; boundary={}".format(boundary))
             else:
-                logger.error(f"Telegram error {response.status_code}: {response.text[:200]}")
-                return False
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error enviando mensaje Telegram: {e}")
-            return False
+                body = json.dumps(data).encode("utf-8")
+                req = urllib.request.Request(url, data=body)
+                req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode())
+        except Exception as e:
+            logger.error("Telegram error: {}".format(e))
+            return {"ok": False, "description": str(e)}
 
-    def send_photo(self, image_path: str, caption: str = "", chat_id: str = None) -> bool:
-        """Envía una imagen con caption por Telegram."""
-        target_id = chat_id or self.chat_id
-        if not self.enabled and not chat_id:
-            return False
+    def enviar_mensaje(self, texto, chat_id=None):
+        return self._request("sendMessage", {"chat_id": chat_id or self.chat_id, "text": texto})
 
-        if not os.path.exists(image_path):
-            logger.error(f"Imagen no encontrada: {image_path}")
-            return False
+    def enviar_foto(self, foto_path, caption="", chat_id=None):
+        dest = chat_id or self.chat_id
+        if not os.path.exists(foto_path):
+            return self.enviar_mensaje(caption, dest)
+        with open(foto_path, "rb") as f:
+            fdata = f.read()
+        fname = os.path.basename(foto_path)
+        return self._request("sendPhoto",
+            data={"chat_id": dest, "caption": caption},
+            files={"photo": (fname, fdata, "image/png")})
 
-        url = f"{self.BASE_URL}/sendPhoto"
+    def enviar_senal(self, signal, chart_path=None):
+        s = signal
+        hora = time.strftime("%H:%M:%S")
 
-        try:
-            with open(image_path, "rb") as img_file:
-                files = {"photo": img_file}
-                data = {
-                    "chat_id": target_id,
-                    "caption": caption,
-                    "parse_mode": "HTML",
-                }
+        is_buy = s.get("type", "BUY") == "BUY"
+        mode = s.get("mode", "TENDENCIA")
+        modo_text = "RANGO S/R" if mode == "RANGO" else "TENDENCIA ICT SWEEP"
 
-                response = requests.post(url, files=files, data=data, timeout=30)
+        if is_buy:
+            lines = [
+                "\U0001F680 SE\u00D1AL DE TRADING",
+                "\U0001F7E2 COMPRA (BUY)",
+            ]
+        else:
+            lines = [
+                "\U0001F680 SE\u00D1AL DE TRADING",
+                "\U0001F534 VENTA (SELL)",
+            ]
 
-                if response.status_code == 200:
-                    logger.info(f"Imagen enviada a Telegram: {os.path.basename(image_path)}")
-                    return True
-                else:
-                    logger.error(f"Telegram photo error {response.status_code}: {response.text[:200]}")
-                    # Fallback: reintentar sin parse_mode
-                    try:
-                        img_file.seek(0)
-                        data2 = {
-                            "chat_id": self.chat_id,
-                            "caption": caption,
-                        }
-                        response2 = requests.post(url, files=files, data=data2, timeout=30)
-                        if response2.status_code == 200:
-                            logger.info(f"Imagen enviada (sin formato): {os.path.basename(image_path)}")
-                            return True
-                    except Exception:
-                        pass
-                    # Fallback: enviar solo el texto
-                    if caption:
-                        self.send_message(caption)
-                    return False
+        lines.append("\U0001F4CA Par: {}".format(s.get("symbol", "")))
+        lines.append("\U0001F552 Hora: {}".format(hora))
+        lines.append("\U0001F7E0 Modo: {}".format(modo_text))
+        lines.append("\U0001F522 Niveles:")
+        lines.append("\U0001F7E1 Entrada: {}".format(s.get("entry", "")))
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error enviando foto Telegram: {e}")
-            if caption:
-                self.send_message(caption)
-            return False
+        sl_pips = s.get("sl_pips", 0)
+        lines.append("\U0001F534 Stop Loss: {} ({} pips)".format(s.get("sl", ""), sl_pips))
 
-    def send_signal_with_chart(self, signal_data: dict, chart_path: str = None) -> bool:
-        """Envía señal completa con gráfico (chat privado + canal si está configurado)."""
-        message = self._format_signal_message(signal_data)
+        tp_pips = s.get("tp_pips", 0)
+        lines.append("\U0001F7E2 Take Profit: {} (+{} pips)".format(s.get("tp", ""), tp_pips))
+
+        rr = s.get("rr", 0)
+        lines.append("\U0001F4C8 R:R: 1:{}".format(rr))
+        lines.append("\U0001F4F6 Score OHLC: {}/5".format(s.get("score", 0)))
+
+        ai_conf = s.get("ai_confidence", 0)
+        ai_comm = s.get("ai_comment", "")
+        if ai_conf >= 75:
+            ai_status = "\u2705 ({}%)".format(ai_conf)
+        elif ai_conf >= 50:
+            ai_status = "\u26A0\uFE0F ({}%)".format(ai_conf)
+        else:
+            ai_status = "\u274C ({}%)".format(ai_conf)
+        lines.append("\U0001F916 AI Vision: {} {}".format(ai_status, ai_comm))
+
+        sweep = s.get("sweep_pips", 0)
+        rejection = s.get("rejection", "fuerte")
+        lines.append("Sweep: {} pips | Rechazo: {}".format(sweep, rejection))
+
+        lines.append("\u2705 Condiciones:")
+        for passed, text in s.get("conditions", []):
+            check = "\u2705" if passed else "\u274C"
+            lines.append("{} {}".format(check, text))
+
+        kz = s.get("killzone", "Fuera de killzone")
+        lines.append("\U0001F3AF Killzone: {}".format(kz))
+
+        adx = s.get("adx_value", 0)
+        if adx > 25:
+            adx_text = "{} (fuerte)".format(adx)
+        elif adx > 20:
+            adx_text = "{} (moderada)".format(adx)
+        else:
+            adx_text = "{} (lateral)".format(adx)
+        lines.append("ADX: {}".format(adx_text))
+        lines.append("Bot TradingPro24-7 \u2014 ICT Liquidity Sweep")
+
+        mensaje = "\n".join(lines)
 
         # Enviar al chat privado
-        if chart_path and os.path.exists(chart_path):
-            sent = self.send_photo(chart_path, caption=message)
-        else:
-            sent = self.send_message(message)
-
-        # También enviar al canal privado si está configurado
-        if self.channel_enabled:
+        try:
             if chart_path and os.path.exists(chart_path):
-                self.send_photo(chart_path, caption=message, chat_id=self.channel_id)
+                self.enviar_foto(chart_path, mensaje, self.chat_id)
             else:
-                self.send_message(message, chat_id=self.channel_id)
-            logger.info(f"Señal enviada al canal: {self.channel_id}")
+                self.enviar_mensaje(mensaje, self.chat_id)
+            logger.info("Senal enviada al chat")
+        except Exception as e:
+            logger.error("Error chat: {}".format(e))
 
-        return sent
+        # Enviar al canal
+        if self.channel_id:
+            try:
+                time.sleep(1)
+                if chart_path and os.path.exists(chart_path):
+                    self.enviar_foto(chart_path, mensaje, self.channel_id)
+                else:
+                    self.enviar_mensaje(mensaje, self.channel_id)
+                logger.info("Senal enviada al CANAL")
+            except Exception as e:
+                logger.error("Error canal: {}".format(e))
 
-    def send_sweep_alert(self, sweep_data: dict, chart_path: str = None) -> bool:
-        """
-        Envía alerta de sweep en curso (antes de confirmación completa).
-
-        Args:
-            sweep_data: dict con info del sweep detectado
-            chart_path: Ruta a la imagen del gráfico
-        """
-        symbol = sweep_data.get("symbol", "???")
-        direction = sweep_data.get("direction", "???")
-        sweep_level = sweep_data.get("sweep_level", 0)
-        current_price = sweep_data.get("current_price", 0)
-        score = sweep_data.get("score", 0)
-        trend = sweep_data.get("trend_detail", "")
-
-        now = datetime.now().strftime("%H:%M:%S")
-
-        if direction == "LONG":
-            dir_emoji = "🟢"
-            dir_text = "ALCISTA (BUSCA COMPRA)"
-            sweep_text = f"Precio barrió low previo: {sweep_level}"
-        else:
-            dir_emoji = "🔴"
-            dir_text = "BAJISTA (BUSCA VENTA)"
-            sweep_text = f"Precio barrió high previo: {sweep_level}"
-
-        message = f"""
-<b>⚠️ SWEEP DE LIQUIDEZ DETECTADO</b>
-
-{dir_emoji} <b>Dirección:</b> {dir_text}
-📊 <b>Par:</b> {symbol}
-⏰ <b>Hora:</b> {now}
-
-<b>🔍 Detalles:</b>
-{sweep_text}
-💰 <b>Precio actual:</b> {current_price}
-📈 <b>Tendencia:</b> {trend}
-📊 <b>Score parcial:</b> {score}/5
-
-<b>⏳ Esperando confirmación de rechazo...</b>
-<i>Observa el gráfico en TradingView.</i>
-
-<i>Bot TradingPro24-7 — ICT Liquidity Sweep</i>"""
-
-        message = message.strip()
-
-        # Enviar imagen con caption
-        if chart_path and os.path.exists(chart_path):
-            return self.send_photo(chart_path, caption=message)
-        else:
-            return self.send_message(message)
-
-    def _format_signal_message(self, signal_data: dict) -> str:
-        """Formatea el mensaje de señal completo."""
-        symbol = signal_data.get("symbol", "???")
-        direction = signal_data.get("signal", "???")
-        score = signal_data.get("score", 0)
-        max_score = signal_data.get("max_score", 5)
-        market_mode = signal_data.get("market_mode", "TENDENCIA")
-
-        if direction == "BUY":
-            dir_emoji = "🟢"
-            dir_text = "COMPRA (BUY)"
-        else:
-            dir_emoji = "🔴"
-            dir_text = "VENTA (SELL)"
-
-        # Modo de mercado
-        if market_mode == "RANGO":
-            mode_emoji = "↔️"
-            mode_text = "RANGO/LATERAL (S/R)"
-        else:
-            mode_emoji = "📈"
-            mode_text = "ICT SWEEP (Tendencia)"
-
-        price = signal_data.get("current_price", 0)
-        sl = signal_data.get("sl_price", 0)
-        tp = signal_data.get("tp_price", 0)
-        lots = signal_data.get("lots", 0)
-
-        ai = signal_data.get("ai_confirmation", {})
-        ai_conf = ai.get("confidence", 0)
-        ai_status = "✅" if ai.get("confirmed") else "❌"
-        ai_sweep = ai.get("sweep_quality", "N/A")
-        ai_rejection = ai.get("rejection_strength", "N/A")
-
-        if sl and tp and price:
-            if direction == "BUY":
-                sl_dist = abs(price - sl)
-                tp_dist = abs(tp - price)
+    def enviar_sweep_alert(self, symbol, timeframe, sweep_info, chart_path=None):
+        hora = time.strftime("%H:%M:%S")
+        msg = (
+            "\U0001F6A8 SWEEP DETECTADO\n"
+            "\U0001F4CA Par: {}\n"
+            "\U0001F552 Hora: {}\n"
+            "Direccion: {}\n"
+            "Nivel: {}\n"
+            "Pips: {}\n"
+            "Esperando confirmacion...\n"
+            "Bot TradingPro24-7"
+        ).format(symbol, hora, sweep_info.get("direction", ""),
+                 sweep_info.get("level", 0), sweep_info.get("sweep_pips", 0))
+        try:
+            if chart_path and os.path.exists(chart_path):
+                self.enviar_foto(chart_path, msg, self.chat_id)
             else:
-                sl_dist = abs(sl - price)
-                tp_dist = abs(price - tp)
-            rr = tp_dist / sl_dist if sl_dist > 0 else 0
-        else:
-            rr = 0
+                self.enviar_mensaje(msg, self.chat_id)
+        except Exception as e:
+            logger.error("Error sweep: {}".format(e))
 
-        # Info de rango (soporte/resistencia)
-        support = signal_data.get("support", 0)
-        resistance = signal_data.get("resistance", 0)
-        range_pips = signal_data.get("range_pips", 0)
+    def enviar_status(self, text):
+        try:
+            self.enviar_mensaje(text, self.chat_id)
+        except Exception as e:
+            logger.error("Error: {}".format(e))
 
-        now = datetime.now().strftime("%H:%M:%S")
-
-        # Encabezado del mensaje según modo
-        if market_mode == "RANGO":
-            message = f"""<b>↔️ SEÑAL DE RANGO</b>
-
-{dir_emoji} <b>{dir_text}</b>
-📊 <b>Par:</b> {symbol}
-{mode_emoji} <b>Modo:</b> {mode_text}
-⏰ <b>Hora:</b> {now}
-
-<b>🎯 Niveles:</b>
-💰 Entrada: {price}
-🛑 Stop Loss: {sl} ({signal_data.get('sl_pips', 0):.0f} pips)
-📈 Take Profit: {tp} ({signal_data.get('tp_pips', 0):.0f} pips)
-📏 R:R: <b>1:{rr:.1f}</b>
-📦 Lotes: <b>{lots}</b>"""
-            if support and resistance:
-                message += f"\n📊 <b>Rango:</b> {range_pips:.0f} pips"
-                message += f"\n🟢 Soporte: {support}"
-                message += f"\n🔴 Resistencia: {resistance}"
-        else:
-            message = f"""<b>🚀 SEÑAL DE TRADING</b>
-
-{dir_emoji} <b>{dir_text}</b>
-📊 <b>Par:</b> {symbol}
-{mode_emoji} <b>Modo:</b> {mode_text}
-⏰ <b>Hora:</b> {now}
-
-<b>🎯 Niveles:</b>
-💰 Entrada: {price}
-🛑 Stop Loss: {sl}
-📈 Take Profit: {tp}
-📏 R:R: <b>1:{rr:.1f}</b>
-📦 Lotes: <b>{lots}</b>"""
-
-        # FVG info
-        fvg = signal_data.get("fvg")
-        ob = signal_data.get("order_block")
-        mtf = signal_data.get("mtf_confirmed", True)
-
-        message += f"""
-
-<b>📊 Score OHLC:</b> {score}/{max_score}
-🤖 <b>AI Vision:</b> {ai_status} ({ai_conf:.0%})
-    Sweep: {ai_sweep} | Rechazo: {ai_rejection}"""
-
-        # FVG
-        if fvg:
-            message += f"\n🔷 <b>FVG:</b> {fvg.get('type', '')} ({fvg.get('size_pips', 0):.1f} pips)"
-
-        # Order Block
-        if ob:
-            message += f"\n🧱 <b>Order Block:</b> {ob.get('type', '')} @ {ob.get('level', '')}"
-
-        # Multi-TF
-        mtf_emoji = "✅" if mtf else "❌"
-        message += f"\n⏱️ <b>H1 Confirmación:</b> {mtf_emoji}"
-
-        message += "\n\n<b>⚡ Condiciones:</b>"
-
-        conditions = signal_data.get("conditions", {})
-        for key, cond in conditions.items():
-            emoji = "✅" if cond.get("passed") else "❌"
-            detail = cond.get("detail", "")
-            if detail:
-                message += f"\n{emoji} {detail}"
-
-        message += f"\n\n<i>TradingPro24-7 Pro v6.0 — ICT + FVG + OB</i>"
-        return message.strip()
-
-    def send_alert(self, title: str, message: str, alert_type: str = "INFO") -> bool:
-        """Envía una alerta genérica."""
-        emojis = {
-            "INFO": "ℹ️",
-            "WARNING": "⚠️",
-            "ERROR": "🚨",
-            "SUCCESS": "✅",
-        }
-
-        emoji = emojis.get(alert_type, "📢")
-        now = datetime.now().strftime("%H:%M:%S")
-
-        text = f"""{emoji} <b>{title}</b>
-⏰ {now}
-
-{message}
-
-<i>TradingPro24-7 Bot</i>"""
-
-        return self.send_message(text.strip())
-
-    def send_daily_summary(self, summary: dict) -> bool:
-        """Envía resumen diario de operaciones."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        message = f"""<b>📊 Resumen Diario — {now}</b>
-
-📈 Señales generadas: {summary.get('signals_sent', 0)}
-⚠️ Sweeps detectados: {summary.get('sweeps_detected', 0)}
-✅ Señales confirmadas AI: {summary.get('signals_confirmed', 0)}
-📦 Operaciones: {summary.get('trades_taken', 0)}
-
-💰 PnL del día: <b>${summary.get('daily_pnl', 0):.2f}</b>
-🎯 Win rate: {summary.get('win_rate', 0):.0%}
-📊 Mejor operación: ${summary.get('best_trade', 0):.2f}
-📉 Peor operación: ${summary.get('worst_trade', 0):.2f}
-
-<i>TradingPro24-7 Bot — Resumen automático</i>"""
-
-        return self.send_message(message.strip())
-
-    def send_startup_message(self) -> bool:
-        """Envía mensaje de inicio del bot."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        channel_status = "✅ Canal activo" if self.channel_enabled else "❌ Canal no configurado"
-        message = f"""<b>🤖 TradingPro24-7 Pro v6.0 — INICIADO</b>
-⏰ {now}
-📊 Modo: ICT Sweep + Rango + FVG + OB + Killzones
-📡 Monitoreando 6 pares en M15
-⏱️ Killzones: London Open, NY Open, London Close
-🔷 FVG Detection: Activo
-🧱 Order Blocks: Activo
-🔍 Multi-TF (M15+H1): Activo
-📸 Graficos con cada senal
-{channel_status}
-
-<i>El bot analiza el mercado cada 60 segundos.</i>"""
-
-        return self.send_message(message.strip())
+    def enviar_error(self, text):
+        try:
+            self.enviar_mensaje("\u274C ERROR\n{}".format(text), self.chat_id)
+        except Exception as e:
+            logger.error("Error: {}".format(e))
