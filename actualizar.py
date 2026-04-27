@@ -13,7 +13,7 @@ import requests
 from datetime import datetime
 
 # ─── CONFIGURACIÓN ─────────────────────────────────────────
-REPO = "profastpage/tradingpro24-7"
+REPO = "gozustrike-lab/tradingpro24-7"
 BRANCH = "main"
 
 # Archivos que SE actualizan (código del bot)
