@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HÍBRIDO — CONFIGURACIÓN (TEMPLATE)
-#  Copia este archivo como config.py y configura tus keys
+#  TRADING BOT HÍBRIDO — CONFIGURACIÓN v5.0
+#  MODO 1: ICT Sweep (tendencia)
+#  MODO 2: Rango/Lateral (soporte/resistencia)
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -14,9 +15,13 @@ OPENROUTER_API_KEY = "TU_API_KEY_AQUÍ"
 # Consíguelo en: @BotFather → /newbot
 TELEGRAM_BOT_TOKEN = "TU_BOT_TOKEN_AQUÍ"
 
-# Telegram Chat ID
+# Telegram Chat ID (tu chat privado para sweep alerts)
 # Consíguelo en: @userinfobot → /start
 TELEGRAM_CHAT_ID = "TU_CHAT_ID_AQUÍ"
+
+# Telegram Channel ID (canal privado para señales confirmadas)
+# Ejemplo: "-1001234567890" — se necesita agregar el bot como admin al canal
+# TELEGRAM_CHANNEL_ID = "-100TU_CHANNEL_ID_AQUÍ"
 
 # ─── MODELO AI VISION ────────────────────────────────────────
 AI_MODEL = "google/gemma-4-31b-it"
@@ -36,16 +41,22 @@ TIMEFRAME = "M15"
 MT5_TIMEFRAME = 15
 
 # ─── PARÁMETROS DE LA ESTRATEGIA ─────────────────────────────
+# Compartidos entre ambos modos
 STRATEGY = {
     "ema_fast": 20,
     "ema_slow": 50,
     "pullback_candles": 3,
     "pullback_min_pips": 10,
     "lookback_candles": 20,
-    "sweep_pip_tolerance": 2,
+    "wick_min_pips": 5,
     "wick_ratio_min": 2.0,
     "close_percentile": 75,
     "min_score": 4,
+
+    # TP/SL para modo TENDENCIA (grande)
+    "trend_sl_pips": 18,
+    "trend_tp_pips": 45,
+
     "pip_values": {
         "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDJPY": 0.01,
         "AUDUSD": 0.0001, "USDCAD": 0.0001, "USDCHF": 0.0001,
@@ -53,6 +64,26 @@ STRATEGY = {
     "digits": {
         "EURUSD": 5, "GBPUSD": 5, "USDJPY": 3,
         "AUDUSD": 5, "USDCAD": 5, "USDCHF": 5,
+    },
+
+    # ═══ MODO RANGO/LATERAL ═══
+    # Se activa automáticamente cuando no hay tendencia
+    "range_mode": {
+        # Cuántas velas mirar para encontrar soporte/resistencia
+        "sr_lookback": 30,
+        # Zona de detección: cuántos pips cerca de S/R para señalar
+        "zone_pips": 5,
+        # Rango mínimo en pips para considerar que hay rango válido
+        "min_range_pips": 20,
+        # Mecha mínima para confirmar rechazo en S/R
+        "wick_min_pips": 3,
+        # Cierre fuerte mínimo en porcentaje
+        "close_percentile": 70,
+        # Score mínimo de 5 para activar señal
+        "min_score": 4,
+        # TP y SL para operaciones de rango (1:1 ratio)
+        "tp_pips": 20,
+        "sl_pips": 15,
     },
 }
 

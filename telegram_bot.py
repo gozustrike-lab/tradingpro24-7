@@ -186,6 +186,7 @@ class TelegramBot:
         direction = signal_data.get("signal", "???")
         score = signal_data.get("score", 0)
         max_score = signal_data.get("max_score", 5)
+        market_mode = signal_data.get("market_mode", "TENDENCIA")
 
         if direction == "BUY":
             dir_emoji = "🟢"
@@ -193,6 +194,14 @@ class TelegramBot:
         else:
             dir_emoji = "🔴"
             dir_text = "VENTA (SELL)"
+
+        # Modo de mercado
+        if market_mode == "RANGO":
+            mode_emoji = "↔️"
+            mode_text = "RANGO/LATERAL (S/R)"
+        else:
+            mode_emoji = "📈"
+            mode_text = "ICT SWEEP (Tendencia)"
 
         price = signal_data.get("current_price", 0)
         sl = signal_data.get("sl_price", 0)
@@ -216,12 +225,38 @@ class TelegramBot:
         else:
             rr = 0
 
+        # Info de rango (soporte/resistencia)
+        support = signal_data.get("support", 0)
+        resistance = signal_data.get("resistance", 0)
+        range_pips = signal_data.get("range_pips", 0)
+
         now = datetime.now().strftime("%H:%M:%S")
 
-        message = f"""<b>🚀 SEÑAL DE TRADING</b>
+        # Encabezado del mensaje según modo
+        if market_mode == "RANGO":
+            message = f"""<b>↔️ SEÑAL DE RANGO</b>
 
 {dir_emoji} <b>{dir_text}</b>
 📊 <b>Par:</b> {symbol}
+{mode_emoji} <b>Modo:</b> {mode_text}
+⏰ <b>Hora:</b> {now}
+
+<b>🎯 Niveles:</b>
+💰 Entrada: {price}
+🛑 Stop Loss: {sl} ({signal_data.get('sl_pips', 0):.0f} pips)
+📈 Take Profit: {tp} ({signal_data.get('tp_pips', 0):.0f} pips)
+📏 R:R: <b>1:{rr:.1f}</b>
+📦 Lotes: <b>{lots}</b>"""
+            if support and resistance:
+                message += f"\n📊 <b>Rango:</b> {range_pips:.0f} pips"
+                message += f"\n🟢 Soporte: {support}"
+                message += f"\n🔴 Resistencia: {resistance}"
+        else:
+            message = f"""<b>🚀 SEÑAL DE TRADING</b>
+
+{dir_emoji} <b>{dir_text}</b>
+📊 <b>Par:</b> {symbol}
+{mode_emoji} <b>Modo:</b> {mode_text}
 ⏰ <b>Hora:</b> {now}
 
 <b>🎯 Niveles:</b>
@@ -229,7 +264,9 @@ class TelegramBot:
 🛑 Stop Loss: {sl}
 📈 Take Profit: {tp}
 📏 R:R: <b>1:{rr:.1f}</b>
-📦 Lotes: <b>{lots}</b>
+📦 Lotes: <b>{lots}</b>"""
+
+        message += f"""
 
 <b>📊 Score OHLC:</b> {score}/{max_score}
 🤖 <b>AI Vision:</b> {ai_status} ({ai_conf:.0%})
@@ -243,7 +280,7 @@ class TelegramBot:
             detail = cond.get("detail", "")
             message += f"\n{emoji} {detail}"
 
-        message += f"\n\n<i>Bot TradingPro24-7 — ICT Liquidity Sweep</i>"
+        message += f"\n\n<i>Bot TradingPro24-7 — ICT + Rango</i>"
         return message.strip()
 
     def send_alert(self, title: str, message: str, alert_type: str = "INFO") -> bool:

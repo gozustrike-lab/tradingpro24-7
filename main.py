@@ -180,11 +180,27 @@ class TradingBot:
         # Calcular SL/TP y posición
         current_price = signal.get("current_price", 0)
         direction = signal.get("signal")
+        market_mode = signal.get("market_mode", "TENDENCIA")
 
         if not current_price or not direction:
             return
 
-        levels = self.risk.calculate_sl_tp(current_price, direction, symbol)
+        # Usar SL/TP según el modo (tendencia o rango)
+        if market_mode == "RANGO" and signal.get("sl_pips") and signal.get("tp_pips"):
+            # Modo rango: usar SL/TP calculados por la estrategia (proporcionales al rango)
+            from config import STRATEGY
+            pip_value = STRATEGY["pip_values"].get(symbol, 0.0001)
+            if direction == "BUY":
+                sl_price = round(current_price - signal["sl_pips"] * pip_value, 5)
+                tp_price = round(current_price + signal["tp_pips"] * pip_value, 5)
+            else:
+                sl_price = round(current_price + signal["sl_pips"] * pip_value, 5)
+                tp_price = round(current_price - signal["tp_pips"] * pip_value, 5)
+            levels = {"sl_price": sl_price, "tp_price": tp_price, "sl_pips": signal["sl_pips"], "tp_pips": signal["tp_pips"]}
+        else:
+            # Modo tendencia: usar risk manager estándar
+            levels = self.risk.calculate_sl_tp(current_price, direction, symbol)
+
         position = self.risk.calculate_position_size(balance, symbol, levels["sl_pips"])
 
         signal.update({
