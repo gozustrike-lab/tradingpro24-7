@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HÍBRIDO — MAIN ENGINE
+#  TRADING BOT HÍBRIDO — MAIN ENGINE v7.0
 #  Orquestador principal — OHLC + Sweep Alerts + AI Vision
+#  Compatible con TelegramBot v7.0 (emojis + canal)
 # ═══════════════════════════════════════════════════════════════
 
 import time
@@ -9,10 +10,7 @@ import sys
 from datetime import datetime, date
 from pytz import timezone
 
-from config import (
-    FOREX_PAIRS, BOT, AI_VISION,
-    OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-)
+import config
 from data_feed import MT5Connection, DataFeed
 from strategy import StrategyEngine
 from ai_vision import AIVision
@@ -35,15 +33,27 @@ logging.basicConfig(
 
 logger = logging.getLogger("TradingBot")
 
+# ─── Config ──────────────────────────────────────────────────
+FOREX_PAIRS = config.FOREX_PAIRS
+BOT = config.BOT
+AI_VISION = config.AI_VISION
+OPENROUTER_API_KEY = config.OPENROUTER_API_KEY
+STRATEGY = config.STRATEGY
+
+# Telegram
+TELEGRAM_BOT_TOKEN = config.TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
+TELEGRAM_CHANNEL_ID = getattr(config, 'TELEGRAM_CHANNEL_ID', None)
+
 
 class TradingBot:
-    """Bot de Trading Híbrido — Motor principal."""
+    """Bot de Trading Hibrido — Motor principal."""
 
     def __init__(self):
         logger.info("=" * 60)
-        logger.info("  TRADINGPRO24-7 — BOT HÍBRIDO")
-        logger.info("  Estrategia: ICT Liquidity Sweep")
-        logger.info("  Modo: OHLC + Sweep Alerts + AI Vision")
+        logger.info("  TRADINGPRO24-7 — BOT HIBRIDO v7.0")
+        logger.info("  Estrategia: ICT Liquidity Sweep + Rango")
+        logger.info("  Modo: OHLC + Sweep Alerts + AI Vision + Canal")
         logger.info("=" * 60)
 
         self.mt5 = MT5Connection()
@@ -51,10 +61,16 @@ class TradingBot:
         self.strategy = None
         self.ai = None
         self.risk = RiskManager()
-        self.telegram = TelegramBot()
+        self.charts = ChartGenerator()
         self.logger = TradeLogger()
         self.copy_trading = CopyTradingManager()
-        self.charts = ChartGenerator()
+
+        # TelegramBot v7.0 con token, chat_id y channel_id
+        self.telegram = TelegramBot(
+            token=TELEGRAM_BOT_TOKEN,
+            chat_id=TELEGRAM_CHAT_ID,
+            channel_id=TELEGRAM_CHANNEL_ID
+        )
 
         self.running = False
         self.signals_sent_today = 0
@@ -64,7 +80,7 @@ class TradingBot:
         self.daily_pnl = 0.0
         self.cycle_count = 0
 
-    def initialize(self) -> bool:
+    def initialize(self):
         """Inicializa todos los componentes del bot."""
         logger.info("Iniciando bot...")
 
@@ -83,30 +99,47 @@ class TradingBot:
             self.ai = None
             logger.warning("AI Vision deshabilitado (sin API key)")
 
-        if self.telegram.enabled:
-            self.telegram.send_startup_message()
+        # Mensaje de inicio
+        channel_status = "Canal activo" if TELEGRAM_CHANNEL_ID else "Canal no configurado"
+        startup_msg = (
+            "TradingPro24-7 Pro v7.0 - INICIADO\n"
+            "{}\n"
+            "Modo: ICT Sweep + Rango + FVG + OB + Killzones\n"
+            "Monitoreando {} pares en M15\n"
+            "Killzones: London Open, NY Open, London Close\n"
+            "FVG Detection: Activo\n"
+            "Order Blocks: Activo\n"
+            "Multi-TF (M15+H1): Activo\n"
+            "Graficos con cada senal\n"
+            "{}"
+        ).format(
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            len(FOREX_PAIRS),
+            channel_status
+        )
+        self.telegram.enviar_status(startup_msg)
 
         logger.info("Bot inicializado correctamente")
-        logger.info(f"Monitoreando {len(FOREX_PAIRS)} pares: {', '.join(FOREX_PAIRS)}")
+        logger.info("Monitoreando {} pares: {}".format(
+            len(FOREX_PAIRS), ", ".join(FOREX_PAIRS)))
+        logger.info("Canal: {}".format(channel_status))
         return True
 
     def run(self):
         """Bucle principal del bot."""
         if not self.initialize():
-            logger.error("No se pudo inicializar el bot. Verifica la conexión con MT5.")
+            logger.error("No se pudo inicializar el bot.")
             return
 
         self.running = True
-        logger.info("Bot en ejecución... Presiona Ctrl+C para detener.")
-        logger.info("Buscando: Sweep Alerts + Señales Completas con AI Vision")
+        logger.info("Bot en ejecucion... Presiona Ctrl+C para detener.")
 
         try:
             while self.running:
                 self._check_cycle()
                 self.cycle_count += 1
-                # Heartbeat cada 10 ciclos (10 minutos)
                 if self.cycle_count % 10 == 0:
-                    logger.info(f"Ciclo #{self.cycle_count} — Monitoreando activo...")
+                    logger.info("Ciclo #{} — Monitoreando activo...".format(self.cycle_count))
                 else:
                     print(".", end="", flush=True)
                 time.sleep(BOT["check_interval"])
@@ -120,7 +153,7 @@ class TradingBot:
             logger.info("Bot apagado correctamente")
 
     def _check_cycle(self):
-        """Ejecuta un ciclo de análisis."""
+        """Ejecuta un ciclo de analisis."""
         if not self.data_feed.is_market_open():
             return
 
@@ -133,51 +166,43 @@ class TradingBot:
                 self._detect_sweep_alert(symbol, balance)
                 self._analyze_pair(symbol, balance)
             except Exception as e:
-                logger.error(f"Error analizando {symbol}: {e}")
+                logger.error("Error analizando {}: {}".format(symbol, e))
 
-    def _detect_sweep_alert(self, symbol: str, balance: float):
-        """Detecta sweep en curso y envía alerta temprana."""
+    def _detect_sweep_alert(self, symbol, balance):
+        """Detecta sweep en curso y envia alerta temprana."""
         sweep = self.strategy.detect_sweep(symbol)
-
         if sweep is None:
             return
 
-        logger.info(
-            f"Sweep detectado: {symbol} {sweep.get('direction')} "
-            f"(barrió {sweep.get('sweep_level')})"
-        )
+        logger.info("Sweep detectado: {} {} ({})".format(
+            symbol, sweep.get("direction"), sweep.get("sweep_level")))
 
         self.sweeps_detected_today += 1
 
-        # Generar gráfico para la alerta
+        # Generar grafico
         df = self.data_feed.get_ohlc(symbol, num_candles=100)
-        chart_path = self.charts.generate_chart(df, symbol, {
-            "signal": "SELL" if sweep.get("direction") == "SHORT" else "BUY",
-            "current_price": sweep.get("current_price"),
-        })
+        chart_path = self.charts.generate_sweep_alert_chart(
+            df, symbol, "M15", sweep)
 
-        # Enviar alerta con imagen
-        if self.telegram.enabled:
-            self.telegram.send_sweep_alert(sweep, chart_path)
+        # Enviar alerta al chat privado (no al canal)
+        self.telegram.enviar_sweep_alert(symbol, "M15", sweep, chart_path)
 
-    def _analyze_pair(self, symbol: str, balance: float):
-        """Analiza un par de divisas buscando señales completas."""
-
+    def _analyze_pair(self, symbol, balance):
+        """Analiza un par buscando senales completas."""
         signal = self.strategy.analyze(symbol)
-
         if signal is None or not signal.get("passed"):
             return
 
-        logger.info(
-            f"Señal detectada: {symbol} {signal.get('signal')} "
-            f"({signal.get('score')}/{signal.get('max_score')})"
-        )
+        logger.info("Senal detectada: {} {} ({}/{})".format(
+            symbol, signal.get("signal"),
+            signal.get("score"), signal.get("max_score")))
 
-        # Generar gráfico
+        # Generar grafico
         df = self.data_feed.get_ohlc(symbol, num_candles=100)
-        chart_path = self.charts.generate_chart(df, symbol, signal)
+        chart_path = self.charts.generate_candlestick_chart(
+            df, symbol, "M15", signal)
 
-        # Calcular SL/TP y posición
+        # Calcular SL/TP
         current_price = signal.get("current_price", 0)
         direction = signal.get("signal")
         market_mode = signal.get("market_mode", "TENDENCIA")
@@ -185,10 +210,7 @@ class TradingBot:
         if not current_price or not direction:
             return
 
-        # Usar SL/TP según el modo (tendencia o rango)
         if market_mode == "RANGO" and signal.get("sl_pips") and signal.get("tp_pips"):
-            # Modo rango: usar SL/TP calculados por la estrategia (proporcionales al rango)
-            from config import STRATEGY
             pip_value = STRATEGY["pip_values"].get(symbol, 0.0001)
             if direction == "BUY":
                 sl_price = round(current_price - signal["sl_pips"] * pip_value, 5)
@@ -196,22 +218,14 @@ class TradingBot:
             else:
                 sl_price = round(current_price + signal["sl_pips"] * pip_value, 5)
                 tp_price = round(current_price - signal["tp_pips"] * pip_value, 5)
-            levels = {"sl_price": sl_price, "tp_price": tp_price, "sl_pips": signal["sl_pips"], "tp_pips": signal["tp_pips"]}
+            levels = {"sl_price": sl_price, "tp_price": tp_price,
+                      "sl_pips": signal["sl_pips"], "tp_pips": signal["tp_pips"]}
         else:
-            # Modo tendencia: usar risk manager estándar
             levels = self.risk.calculate_sl_tp(current_price, direction, symbol)
 
         position = self.risk.calculate_position_size(balance, symbol, levels["sl_pips"])
 
-        signal.update({
-            "symbol": symbol,
-            "sl_price": levels["sl_price"],
-            "tp_price": levels["tp_price"],
-            "lots": position["lots"],
-            "risk_amount": position["risk_amount"],
-        })
-
-        # Confirmación AI Vision
+        # Confirmacion AI Vision
         ai_confirmation = {"confirmed": False, "confidence": 0}
 
         if self.ai and chart_path:
@@ -220,14 +234,12 @@ class TradingBot:
 
             if not ai_confirmation.get("confirmed"):
                 if not ai_confirmation.get("skipped"):
-                    logger.info(
-                        f"AI rechazó la señal: {symbol} "
-                        f"(confianza: {ai_confirmation.get('confidence', 0):.0%})"
-                    )
+                    logger.info("AI rechazo la senal: {} ({:.0%})".format(
+                        symbol, ai_confirmation.get("confidence", 0)))
                 return
         elif not self.ai:
             if signal.get("score", 0) < 5:
-                logger.info(f"Sin AI, se requiere score perfecto (5/5) para {symbol}")
+                logger.info("Sin AI, score perfecto requerido (5/5) para {}".format(symbol))
                 return
             ai_confirmation = {
                 "confirmed": True, "confidence": 1.0,
@@ -238,26 +250,52 @@ class TradingBot:
         # Verificar riesgo
         risk_check = self.risk.can_trade(balance)
         if not risk_check["allowed"]:
-            logger.warning(f"Riesgo bloquea operación: {risk_check['reason']}")
+            logger.warning("Riesgo bloquea operacion: {}".format(risk_check["reason"]))
             return
 
-        # Enviar señal completa con imagen
+        # Enviar senal profesional con emojis al chat Y al canal
         self.signals_sent_today += 1
         self.signals_confirmed_today += 1
 
-        if self.telegram.enabled:
-            self.telegram.send_signal_with_chart(signal, chart_path)
+        # Construir signal dict para telegram_bot
+        telegram_signal = {
+            "type": direction,
+            "mode": market_mode,
+            "symbol": symbol,
+            "entry": current_price,
+            "sl": levels["sl_price"],
+            "tp": levels["tp_price"],
+            "sl_pips": levels["sl_pips"],
+            "tp_pips": levels["tp_pips"],
+            "rr": round(levels["tp_pips"] / max(levels["sl_pips"], 1), 1),
+            "score": signal.get("score", 0),
+            "ai_confidence": int(ai_confirmation.get("confidence", 0) * 100),
+            "ai_comment": ai_confirmation.get("comment", ""),
+            "sweep_pips": signal.get("sweep_pips", 0),
+            "wick_ratio": signal.get("wick_ratio", 0),
+            "close_range_pct": signal.get("close_range_pct", 0),
+            "pullback_pips": signal.get("pullback_pips", 0),
+            "rejection": ai_confirmation.get("rejection_strength", "fuerte"),
+            "killzone": self._get_current_killzone(),
+            "adx_value": signal.get("adx_value", 0),
+            "conditions": [
+                (True, "EMA20>50" if signal.get("ema_trend") == "bullish" else "EMA20<50"),
+                (signal.get("sweep_passed", False), "Sweep {} pips bajo previo".format(signal.get("sweep_pips", 0))),
+                (signal.get("wick_passed", False), "Mecha {:.1f}x sup (min: 2.0x)".format(signal.get("wick_ratio", 0))),
+                (signal.get("close_passed", False), "Cierre {:.1f}% del rango".format(signal.get("close_range_pct", 0))),
+                (signal.get("pullback_passed", True), "Pullback OK"),
+            ]
+        }
+
+        self.telegram.enviar_senal(telegram_signal, chart_path)
 
         self.logger.log_signal(signal)
 
-        logger.info(
-            f"SEÑAL ENVIADA: {symbol} {direction} | "
-            f"SL={levels['sl_price']} TP={levels['tp_price']} | "
-            f"Lotes={position['lots']} | "
-            f"AI={ai_confirmation.get('confidence', 0):.0%}"
-        )
+        logger.info("SENAL ENVIADA: {} {} | SL={} TP={} | Lotes={} | AI={:.0%}".format(
+            symbol, direction, levels["sl_price"], levels["tp_price"],
+            position["lots"], ai_confirmation.get("confidence", 0)))
 
-        # Registrar en portafolio copy trading
+        # Copy trading
         self.copy_trading.add_trade_to_portfolio({
             "symbol": symbol,
             "signal": direction,
@@ -269,25 +307,40 @@ class TradingBot:
             "score": signal.get("score", 0),
         })
 
+    def _get_current_killzone(self):
+        """Retorna la killzone ICT actual."""
+        try:
+            utc_now = datetime.now(timezone("UTC"))
+            hour = utc_now.hour
+            if 2 <= hour <= 5:
+                return "Asian Session"
+            elif 7 <= hour <= 10:
+                return "London Open"
+            elif 13 <= hour <= 16:
+                return "New York Open"
+            elif 19 <= hour <= 21:
+                return "London Close"
+            return "Fuera de killzone"
+        except:
+            return "Fuera de killzone"
+
     def _send_daily_summary(self):
-        """Envía resumen diario al apagar el bot."""
-        if not self.telegram.enabled:
-            return
-
+        """Envia resumen diario."""
         stats = self.logger.get_stats()
-
-        summary = {
-            "signals_sent": self.signals_sent_today,
-            "signals_confirmed": self.signals_confirmed_today,
-            "sweeps_detected": self.sweeps_detected_today,
-            "trades_taken": self.trades_today,
-            "daily_pnl": self.daily_pnl,
-            "win_rate": stats.get("win_rate", 0),
-            "best_trade": 0,
-            "worst_trade": 0,
-        }
-
-        self.telegram.send_daily_summary(summary)
+        summary = (
+            "RESUMEN DIARIO\n"
+            "Senales enviadas: {}\n"
+            "Senales confirmadas: {}\n"
+            "Sweeps detectados: {}\n"
+            "Win rate: {:.0%}\n"
+            "Bot TradingPro24-7 v7.0"
+        ).format(
+            self.signals_sent_today,
+            self.signals_confirmed_today,
+            self.sweeps_detected_today,
+            stats.get("win_rate", 0)
+        )
+        self.telegram.enviar_status(summary)
 
 
 # ═══════════════════════════════════════════════════════════════
