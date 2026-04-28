@@ -1,8 +1,10 @@
 """
-TradingPro24-7 - Telegram Bot v8.1
+TradingPro24-7 - Telegram Bot v8.3
 Senales profesionales con:
 - Bloque de codigo copiable (Entry/SL/TP)
-- Imagen de analisis con cada señal
+- Imagen de analisis con S/R lines
+- Condicion de mercado (ALCISTA/BAJISTA/LATERAL)
+- Info S/R Flip + niveles
 - Emojis + chat + canal
 """
 
@@ -96,6 +98,22 @@ class TelegramBot:
         msg.append("\U0001F552 Hora: {}".format(hora))
         msg.append("\U0001F7E0 Modo: {}".format(mode))
 
+        # Condicion de mercado
+        mc = s.get("market_condition", "")
+        mc_icons = {"ALCISTA": "\U0001F4C8", "BAJISTA": "\U0001F4C9", "LATERAL": "\u2194\uFE0F", "NORMAL": "\u2139\uFE0F"}
+        if mc:
+            msg.append("{} Mercado: {}".format(mc_icons.get(mc, "\u2139\uFE0F"), mc))
+
+        # MTF direction
+        mtf_dir = s.get("mtf_direction", "")
+        if mtf_dir:
+            msg.append("\U0001F504 MTF: {}".format(mtf_dir))
+
+        # S/R info
+        sr_reason = s.get("sr_reason", "")
+        if sr_reason:
+            msg.append("\U0001F3AF {}".format(sr_reason))
+
         # ── BLOQUE DE CODIGO COPIABLE ──
         msg.append("\U0001F4CB Copiar niveles:")
         code_block = (
@@ -134,7 +152,7 @@ class TelegramBot:
         if kz:
             msg.append("\U0001F3AF Killzone: {}".format(kz))
 
-        msg.append("Bot TradingPro24-7 \u2014 v8.1 Momentum ICT")
+        msg.append("Bot TradingPro24-7 \u2014 v8.3 ICT PRO")
 
         mensaje = "\n".join(msg)
 
@@ -178,6 +196,10 @@ class TelegramBot:
                 canal_msg.append("```")
 
                 canal_msg.append("\U0001F916 AI: {}%".format(ai_conf))
+                if mc:
+                    canal_msg.append("{} {}".format(mc_icons.get(mc, ""), mc))
+                if sr_reason:
+                    canal_msg.append("\U0001F3AF {}".format(sr_reason))
                 canal_msg.append("\U0001F3AF {}".format(kz))
 
                 canal_mensaje = "\n".join(canal_msg)

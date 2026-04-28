@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — MAIN ENGINE v8.3 ICT PRO
+#  TRADINGPRO24-7 — MAIN ENGINE v8.3 ICT PRO (FINAL)
 #  ═══ S/R Automatico + Auto-ejecucion MT5 ═══
 #  ═══ MTF: M5 + M1 para XAUUSD ═══
+#  ═══ Deteccion mercado: ALCISTA / BAJISTA / LATERAL ═══
 #  ═══ Abre operaciones automaticamente en tu cuenta MT5 ═══
 # ═══════════════════════════════════════════════════════════════
 
@@ -48,17 +49,18 @@ TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
 TELEGRAM_CHANNEL_ID = getattr(config, 'TELEGRAM_CHANNEL_ID', None)
 
 # ─── Auto-trading config ─────────────────────────────────────
-AUTO_TRADE = getattr(config, 'AUTO_TRADE', True)  # Activado por defecto
-AUTO_TRADE_VOLUME = getattr(config, 'AUTO_TRADE_VOLUME', 0.01)  # 0.01 lotes por defecto
+AUTO_TRADE = getattr(config, 'AUTO_TRADE', True)
+AUTO_TRADE_VOLUME = getattr(config, 'AUTO_TRADE_VOLUME', 0.01)
 
 
 class TradingBot:
-    """Bot TradingPro24-7 v8.3 — S/R + MTF + Auto-ejecucion."""
+    """Bot TradingPro24-7 v8.3 — S/R + MTF + Mercado adaptativo + Auto-trade."""
 
     def __init__(self):
         logger.info("=" * 60)
         logger.info("  TRADINGPRO24-7 — BOT v8.3 ICT PRO")
         logger.info("  S/R Automatico + S/R Flip + Pullback Entry")
+        logger.info("  Deteccion: ALCISTA / BAJISTA / LATERAL")
         logger.info("  XAUUSD: M5 dir + M1 entrada + S/R zones")
         logger.info("  Auto-ejecucion MT5: {}".format("ACTIVADA" if AUTO_TRADE else "DESACTIVADA"))
         logger.info("=" * 60)
@@ -99,7 +101,7 @@ class TradingBot:
             logger.info("AI Vision habilitado (Gemma 4 31B)")
         else:
             self.ai = None
-            logger.warning("AI Vision deshabilitado")
+            logger.warning("AI Vision deshabilitado (falta API key o esta desactivado)")
 
         # Info de pares
         pair_info = []
@@ -116,14 +118,15 @@ class TradingBot:
         channel_status = "Canal activo" if TELEGRAM_CHANNEL_ID else "Canal no configurado"
 
         startup_msg = (
-            "TradingPro24-7 v8.3 ICT PRO \u2014 INICIADO\n"
-            "\U0001F552 {}\n"
-            "\U0001F7E9 S/R Automatico + S/R Flip + Pullback\n"
-            "\U0001F4CA Pares: {}\n"
-            "\U0001F4C8 XAUUSD: M5 dir + M1 entrada + S/R zones\n"
-            "\U0001F916 {}\n"
-            "\u26A0\uFE0F Sin limite de perdidas (pruebas)\n"
-            "\u2705 {}"
+            "TradingPro24-7 v8.3 ICT PRO — INICIADO\n"
+            "{}\n"
+            "S/R Automatico + Flip + Pullback\n"
+            "Mercado adaptativo: ALCISTA/BAJISTA/LATERAL\n"
+            "Pares: {}\n"
+            "XAUUSD: M5 dir + M1 entrada + S/R zones\n"
+            "{}\n"
+            "Sin limite de perdidas (pruebas)\n"
+            "{}"
         ).format(
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ", ".join(pair_info),
@@ -135,6 +138,7 @@ class TradingBot:
         logger.info("Bot v8.3 inicializado")
         logger.info("Pares: {}".format(", ".join(pair_info)))
         logger.info("Auto-trade: {}".format(auto_status))
+        logger.info("Estrategia: S/R + Flip + Mercado Adaptativo")
         return True
 
     def run(self):
@@ -150,7 +154,7 @@ class TradingBot:
                 self._check_cycle()
                 self.cycle_count += 1
                 if self.cycle_count % 10 == 0:
-                    logger.info("Ciclo #{} — {} pares | {} senales | {} trades".format(
+                    logger.info("Ciclo #{} | {} pares | {} senales | {} trades".format(
                         self.cycle_count, len(FOREX_PAIRS),
                         self.signals_sent_today, self.trades_executed))
                 else:
@@ -189,24 +193,36 @@ class TradingBot:
         direction = signal.get("signal")
         current_price = signal.get("current_price", 0)
         mtf_tf = signal.get("mtf_timeframe", "")
+        market_condition = signal.get("market_condition", "NORMAL")
 
         if not current_price or not direction:
             return
 
-        logger.info("SENAL: {} {} [{}] S/R={:.2f} Flip={}".format(
-            symbol, direction, timeframe,
+        logger.info("SENAL: {} {} [{}] Mercado:{} S/R={:.2f} Flip={}".format(
+            symbol, direction, timeframe, market_condition,
             signal.get("sr_level", 0), signal.get("sr_is_flip", False)))
 
-        # Generar grafico
+        # Generar grafico CON niveles S/R
         df = self.data_feed.get_ohlc(symbol, num_candles=100, timeframe=timeframe)
-        chart_path = self.charts.generate_candlestick_chart(
-            df, symbol, timeframe, {
-                "type": direction,
-                "sl": signal.get("sl_price"),
-                "tp": signal.get("tp_price"),
-            })
+        chart_levels = signal.get("chart_levels", {})
 
-        # Niveles
+        chart_signal_data = {
+            "type": direction,
+            "sl": signal.get("sl_price"),
+            "tp": signal.get("tp_price"),
+            "entry": current_price,
+            "mode": "SR_FLIP" if signal.get("sr_is_flip") else "SR_PULLBACK",
+            "market_condition": market_condition,
+            "mtf_direction": signal.get("mtf_direction", ""),
+        }
+
+        chart_path = self.charts.generate_candlestick_chart(
+            df, symbol, timeframe,
+            signal=chart_signal_data,
+            chart_levels=chart_levels
+        )
+
+        # Niveles SL/TP
         sl_price = signal.get("sl_price")
         tp_price = signal.get("tp_price")
         sl_pips = signal.get("sl_pips")
@@ -254,6 +270,10 @@ class TradingBot:
             "conditions": conds_list,
             "killzone": self._get_current_killzone(),
             "adx_value": 0,
+            # Nuevos campos v8.3
+            "market_condition": market_condition,
+            "sr_reason": sr_info,
+            "mtf_direction": signal.get("mtf_direction", ""),
         }
 
         self.telegram.enviar_senal(telegram_signal, chart_path)
@@ -261,25 +281,30 @@ class TradingBot:
 
         # ═══ AUTO-EJECUCION EN MT5 ═══
         if AUTO_TRADE:
+            logger.info("Ejecutando trade automatico: {} {} @ {}".format(symbol, direction, current_price))
             trade_result = self._execute_trade(symbol, direction, current_price, sl_price, tp_price)
             if trade_result:
                 self.trades_executed += 1
-                # Enviar confirmacion a Telegram
                 order_id = trade_result.get("order", 0)
                 msg = (
-                    "\u2705 TRADE EJECUTADO\n"
+                    "TRADE EJECUTADO\n"
                     "{} {} @ {}\n"
                     "SL: {}\n"
                     "TP: {}\n"
+                    "Mercado: {}\n"
                     "Ticket: {}\n"
                     "Lotes: {}".format(
                         symbol, direction, current_price,
-                        sl_price, tp_price, order_id, AUTO_TRADE_VOLUME
+                        sl_price, tp_price, market_condition,
+                        order_id, AUTO_TRADE_VOLUME
                     )
                 )
                 self.telegram.enviar_status(msg)
-                logger.info("TRADE MT5: {} {} @ {} | Ticket: {}".format(
+                logger.info("TRADE MT5 OK: {} {} @ {} | Ticket: {}".format(
                     symbol, direction, current_price, order_id))
+            else:
+                logger.warning("Trade fallo: {} {} @ {}".format(symbol, direction, current_price))
+                self.telegram.enviar_status("Trade fallo: {} {} | Revisar MT5".format(symbol, direction))
 
     def _execute_trade(self, symbol, direction, price, sl, tp):
         """Ejecuta la operacion directamente en MT5."""
@@ -289,7 +314,15 @@ class TradingBot:
                 logger.error("Simbolo no encontrado: {}".format(symbol))
                 return None
 
-            # Ajustar digits
+            # Verificar que el simbolo esta disponible para trading
+            if not symbol_info.visible:
+                logger.info("Haciendo visible el simbolo: {}".format(symbol))
+                if not mt5.symbol_select(symbol, True):
+                    logger.error("No se pudo habilitar simbolo: {}".format(symbol))
+                    return None
+
+            # Re-obtener info despues de seleccionar
+            symbol_info = mt5.symbol_info(symbol)
             digits = symbol_info.digits
             price = round(price, digits)
             sl = round(sl, digits)
@@ -298,14 +331,17 @@ class TradingBot:
             # Tipo de orden
             if direction == "BUY":
                 order_type = mt5.ORDER_TYPE_BUY
-                action = mt5.TRADE_ACTION_DEAL
+                price = mt5.symbol_info_tick(symbol).ask
             else:
                 order_type = mt5.ORDER_TYPE_SELL
-                action = mt5.TRADE_ACTION_DEAL
+                price = mt5.symbol_info_tick(symbol).bid
+
+            sl = round(sl, digits)
+            tp = round(tp, digits)
 
             # Request
             request = {
-                "action": action,
+                "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": AUTO_TRADE_VOLUME,
                 "type": order_type,
@@ -313,7 +349,7 @@ class TradingBot:
                 "sl": sl,
                 "tp": tp,
                 "deviation": 20,
-                "magic": 24701,  # Magic number TradingPro24-7
+                "magic": 24701,
                 "comment": "TP247_v83",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
@@ -323,7 +359,7 @@ class TradingBot:
 
             if result is None:
                 error = mt5.last_error()
-                logger.error("Error enviando orden: {}".format(error))
+                logger.error("Error enviando orden MT5: {} | Retcode: {}".format(error, error))
                 return None
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:

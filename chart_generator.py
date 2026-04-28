@@ -1,6 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — CHART GENERATOR v8.1
-#  Soporta M1 para XAUUSD + M15 para forex
+#  TRADINGPRO24-7 — CHART GENERATOR v8.3
+#  ═══ Dibuja lineas S/R + Flip + SL/TP + Condicion mercado ═══
+#  ═══ Soporta M1 para XAUUSD + M15 para forex ═══
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChartGenerator:
-    """Genera graficos de velas con soporte M1 y M15."""
+    """Genera graficos de velas con S/R levels, flip zones y condicion de mercado."""
 
     def __init__(self, output_dir="screenshots"):
         self.output_dir = output_dir
@@ -39,7 +40,16 @@ class ChartGenerator:
         for key, val in self.style_config.items():
             plt.rcParams[key] = val
 
-    def generate_candlestick_chart(self, df, symbol, timeframe, signal=None, levels=None):
+    def generate_candlestick_chart(self, df, symbol, timeframe, signal=None, chart_levels=None):
+        """
+        Genera grafico con:
+        - Velas japonesas
+        - EMAs
+        - Lineas S/R (soportes verdes, resistencias rojas)
+        - Lineas S/R Flip (amarillas punteadas)
+        - SL/TP
+        - Condicion de mercado en el titulo
+        """
         try:
             chart_df = df.copy()
             chart_df = chart_df.rename(columns={
@@ -58,9 +68,10 @@ class ChartGenerator:
             filename = "{}_{}_{}{}.png".format(symbol, timeframe, timestamp, signal_tag)
             filepath = os.path.join(self.output_dir, filename)
 
-            fig, ax = plt.subplots(figsize=(12, 7), facecolor='#1a1a2e')
+            fig, ax = plt.subplots(figsize=(14, 8), facecolor='#1a1a2e')
             ax.set_facecolor('#16213e')
 
+            # ── Dibujar velas ──
             for i, (idx, row) in enumerate(chart_df.iterrows()):
                 color = '#22c55e' if row['Close'] >= row['Open'] else '#ef4444'
                 body_bottom = min(row['Open'], row['Close'])
@@ -68,7 +79,7 @@ class ChartGenerator:
                 ax.bar(i, body_height, bottom=body_bottom, width=0.6, color=color, edgecolor=color)
                 ax.plot([i, i], [row['Low'], row['High']], color=color, linewidth=1)
 
-            # EMAs — usar los valores correctos segun timeframe
+            # ── EMAs ──
             if symbol == "XAUUSD":
                 ema_fast = chart_df['Close'].ewm(span=10, adjust=False).mean()
                 ema_slow = chart_df['Close'].ewm(span=25, adjust=False).mean()
@@ -80,32 +91,80 @@ class ChartGenerator:
                 ax.plot(range(len(chart_df)), ema_fast.values, color='#3b82f6', linewidth=1.2, label='EMA 20')
                 ax.plot(range(len(chart_df)), ema_slow.values, color='#f59e0b', linewidth=1.2, label='EMA 50')
 
-            # Lineas SL/TP
+            # ── Dibujar lineas S/R desde chart_levels ──
+            if chart_levels:
+                # Soportes (verdes)
+                for sp in chart_levels.get("supports", []):
+                    if sp is not None:
+                        ax.axhline(y=sp, color='#22c55e', linestyle='-', linewidth=1.0, alpha=0.6)
+                        ax.text(0, sp, " S: {:.2f}".format(sp),
+                                color='#22c55e', fontsize=8, fontweight='bold',
+                                va='bottom', ha='left',
+                                bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#22c55e', alpha=0.8))
+
+                # Resistencias (rojas)
+                for rs in chart_levels.get("resistances", []):
+                    if rs is not None:
+                        ax.axhline(y=rs, color='#ef4444', linestyle='-', linewidth=1.0, alpha=0.6)
+                        ax.text(0, rs, " R: {:.2f}".format(rs),
+                                color='#ef4444', fontsize=8, fontweight='bold',
+                                va='top', ha='left',
+                                bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#ef4444', alpha=0.8))
+
+                # S/R Flips (amarillos punteados)
+                for fp in chart_levels.get("flips", []):
+                    if fp is not None:
+                        ax.axhline(y=fp, color='#eab308', linestyle='--', linewidth=1.5, alpha=0.8)
+                        ax.text(len(chart_df)-1, fp, " FLIP: {:.2f} ".format(fp),
+                                color='#eab308', fontsize=8, fontweight='bold',
+                                va='center', ha='right',
+                                bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#eab308', alpha=0.9))
+
+            # ── SL/TP lines ──
             if signal:
-                mode_text = "Momentum ICT"
-                title = "TradingPro24-7 | {} | {} | {} | {}".format(symbol, timeframe, mode_text, signal['type'])
+                signal_type = signal.get('type', '')
+                mode_text = signal.get('mode', 'S/R ICT')
+
+                # Condicion de mercado
+                market_cond = signal.get('market_condition', '')
+                mtf_dir = signal.get('mtf_direction', '')
+
+                title_parts = ["TradingPro24-7", symbol, timeframe]
+                if market_cond:
+                    title_parts.append(market_cond)
+                if mtf_dir:
+                    title_parts.append(mtf_dir)
+                title_parts.append(mode_text)
+                title_parts.append(signal_type)
+                title = " | ".join(title_parts)
+
+                # TP line (green dashed)
                 if 'tp' in signal and signal['tp']:
-                    ax.axhline(y=signal['tp'], color='#22c55e', linestyle='--', linewidth=1.5)
+                    ax.axhline(y=signal['tp'], color='#22c55e', linestyle='--', linewidth=1.5, alpha=0.9)
                     ax.text(len(chart_df)-1, signal['tp'], " TP: {:.5f}".format(signal['tp']),
-                            color='#22c55e', fontsize=8, fontweight='bold', va='bottom')
+                            color='#22c55e', fontsize=9, fontweight='bold', va='bottom')
+
+                # SL line (red dashed)
                 if 'sl' in signal and signal['sl']:
-                    ax.axhline(y=signal['sl'], color='#ef4444', linestyle='--', linewidth=1.5)
+                    ax.axhline(y=signal['sl'], color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
                     ax.text(len(chart_df)-1, signal['sl'], " SL: {:.5f}".format(signal['sl']),
-                            color='#ef4444', fontsize=8, fontweight='bold', va='top')
+                            color='#ef4444', fontsize=9, fontweight='bold', va='top')
+
+                # Entry point marker
+                if 'entry' in signal and signal['entry']:
+                    entry_y = signal['entry']
+                    ax.axhline(y=entry_y, color='#a855f7', linestyle='-.', linewidth=1, alpha=0.7)
+                    ax.text(len(chart_df)//2, entry_y, " ENTRY ",
+                            color='#a855f7', fontsize=8, fontweight='bold',
+                            va='bottom', ha='center')
             else:
                 title = "TradingPro24-7 | {} | {}".format(symbol, timeframe)
 
-            if levels:
-                for lvl_name, lvl_price in levels.items():
-                    if lvl_price is not None:
-                        clr = '#ef4444' if 'resist' in lvl_name.lower() or 'high' in lvl_name.lower() else '#22c55e'
-                        ax.axhline(y=lvl_price, color=clr, linestyle=':', linewidth=1, alpha=0.7)
-
-            ax.set_title(title, color='#e2e8f0', fontsize=12, fontweight='bold', pad=10)
+            ax.set_title(title, color='#e2e8f0', fontsize=11, fontweight='bold', pad=10)
             ax.set_xlabel('Candles', color='#94a3b8')
             ax.set_ylabel('Price', color='#94a3b8')
             ax.tick_params(colors='#94a3b8')
-            ax.legend(loc='best', facecolor='#1a1a2e', edgecolor='#334155', labelcolor='#e2e8f0')
+            ax.legend(loc='best', facecolor='#1a1a2e', edgecolor='#334155', labelcolor='#e2e8f0', fontsize=8)
             ax.grid(True, color='#334155', alpha=0.5, linestyle='--')
             for spine in ax.spines.values():
                 spine.set_color('#334155')
@@ -122,5 +181,4 @@ class ChartGenerator:
             return None
 
     def generate_sweep_alert_chart(self, df, symbol, timeframe, sweep_info):
-        # Simplificado — el v8.1 no usa sweep alerts
         return self.generate_candlestick_chart(df, symbol, timeframe)

@@ -1,16 +1,17 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — STRATEGY ENGINE v8.3 ICT PRO
+#  TRADINGPRO24-7 — STRATEGY ENGINE v8.3 ICT PRO (FINAL)
 #  ═══ S/R AUTOMATICO + S/R FLIP + PULLBACK ENTRY ═══
+#  ═══ Deteccion de mercado: ALCISTA / BAJISTA / LATERAL ═══
 #  ═══ MTF: M5 direccion + M1 entrada ═══
-#  ═══ Auto-ejecucion en MT5 ═══
 #  ═══════════════════════════════════════════════════════════════
 #
-#  CONCEPTO CLAVE (lo que el usuario dibujo con lineas rojas):
-#  1. Bot detecta resistencias/soportes clave automaticamente
-#  2. Cuando precio rompe resistencia → esa zona se convierte en SOPORTE
-#  3. Cuando precio hace pullback a esa zona → SENAL DE COMPRA
-#  4. Viceversa para ventas
-#  5. M5 confirma direccion, M1 busca entrada en S/R flip
+#  CONCEPTO CLAVE:
+#  1. Bot detecta si mercado esta en TENDENCIA o LATERAL
+#  2. TENDENCIA ALCISTA: solo compras, pullback a soporte/flip
+#  3. TENDENCIA BAJISTA: solo ventas, pullback a resistencia/flip
+#  4. MERCADO LATERAL: compras en soporte + ventas en resistencia
+#  5. S/R Flip: resistencia rota se convierte en soporte (y viceversa)
+#  6. M5 confirma direccion general, M1 busca entrada precisa
 #
 # ═══════════════════════════════════════════════════════════════
 
@@ -36,10 +37,10 @@ PAIR_CONFIG = {
         "sl_min": 20.0, "sl_max": 35.0,
         "spread_limit": 5.0,
         "cooldown": 45,
-        "sr_lookback": 50,       # Velas para buscar S/R
-        "sr_touches": 2,         # Minimo toques para validar S/R
-        "sr_zone_pips": 3.0,     # Zona de tolerancia en pips
-        "pullback_zone_pips": 5, # Zona de pullback valida
+        "sr_lookback": 50,
+        "sr_touches": 2,
+        "sr_zone_pips": 3.0,
+        "pullback_zone_pips": 5,
     },
     "_DEFAULT": {
         "timeframe": "M15",
@@ -63,7 +64,7 @@ def get_pair_config(symbol: str) -> dict:
 
 
 class StrategyEngine:
-    """Motor v8.3 — S/R Automatico + Flip + Pullback + MTF."""
+    """Motor v8.3 — S/R + Flip + Pullback + MTF + Deteccion de Mercado."""
 
     def __init__(self, data_feed: DataFeed):
         self.data_feed = data_feed
@@ -71,26 +72,30 @@ class StrategyEngine:
         self.last_signal_time = {}
 
     # ═══════════════════════════════════════════════════════════
-    #  ANALISIS PRINCIPAL
+    #  ANALISIS PRINCIPAL — 6 PASOS
     # ═══════════════════════════════════════════════════════════
 
     def analyze(self, symbol: str):
         pc = get_pair_config(symbol)
 
+        # PASO 0: Sesion y killzone activos
         if not self._is_session_active(symbol):
             return None
         if not self._is_killzone_active(symbol):
             return None
 
-        # PASO 1: MTF confirma direccion
+        # PASO 1: Detectar condicion del mercado (ALCISTA/BAJISTA/LATERAL)
+        market_condition = "NORMAL"
         mtf_direction = None
+        mtf_score = 0
         mtf_timeframe = pc.get("mtf_timeframe")
-        if mtf_timeframe:
-            mtf_direction, mtf_score = self._check_mtf_direction(symbol, pc)
-            if mtf_direction is None:
-                return None
 
-        # PASO 2: Obtener datos
+        if mtf_timeframe:
+            mtf_direction, mtf_score, market_condition = self._check_mtf_condition(symbol, pc)
+            logger.info("[{}] MTF: {} | Mercado: {} | Score: {}".format(
+                symbol, mtf_direction or "NEUTRO", market_condition, mtf_score))
+
+        # PASO 2: Obtener datos OHLC
         timeframe = pc["timeframe"]
         num_candles = 200 if timeframe == "M1" else 100
 
@@ -98,10 +103,12 @@ class StrategyEngine:
         if df is None or len(df) < 50:
             return None
 
+        # Verificar spread
         spread = self.data_feed.get_current_spread(symbol) if hasattr(self.data_feed, 'get_current_spread') else None
         if spread is not None and spread > pc["spread_limit"]:
             return None
 
+        # Cooldown
         if not self._check_signal_cooldown(symbol, pc["cooldown"]):
             return None
 
@@ -113,20 +120,24 @@ class StrategyEngine:
         # PASO 3: Detectar niveles S/R
         supports, resistances = self._detect_sr_levels(df, pip_value, pc)
 
-        # PASO 4: Detectar S/R flips (resistencia→soporte, soporte→resistencia)
+        # PASO 4: Detectar S/R flips
         sr_flips = self._detect_sr_flips(df, supports, resistances, pip_value, pc)
 
-        # PASO 5: Buscar pullback a S/R flip (la entrada perfecta)
-        result = self._find_pullback_to_sr(symbol, df, current, mtf_direction,
-                                           supports, resistances, sr_flips,
-                                           pip_value, digits, pc)
+        # PASO 5: Buscar entrada segun condicion de mercado
+        result = self._find_entry(symbol, df, current, market_condition,
+                                   mtf_direction, supports, resistances, sr_flips,
+                                   pip_value, digits, pc)
 
         if result is None:
             return None
 
-        # PASO 6: Verificar que la direccion coincide con MTF
+        # PASO 6: En tendencia, verificar que senal va a favor
         direction = result["direction"]
-        if mtf_direction and direction != mtf_direction:
+        if market_condition == "ALCISTA" and direction != "LONG":
+            logger.info("[{}] Bloqueada: {} en mercado alcista".format(symbol, direction))
+            return None
+        if market_condition == "BAJISTA" and direction != "SHORT":
+            logger.info("[{}] Bloqueada: {} en mercado bajista".format(symbol, direction))
             return None
 
         # Completar resultado
@@ -134,17 +145,221 @@ class StrategyEngine:
         result["timestamp"] = datetime.now().isoformat()
         result["current_price"] = current_price
         result["timeframe"] = timeframe
-        result["market_mode"] = "SR_FLIP"
+        result["market_condition"] = market_condition
+
+        # S/R levels para el grafico
+        result["chart_levels"] = {
+            "supports": [s["price"] for s in supports[:3]],
+            "resistances": [r["price"] for r in resistances[:3]],
+            "flips": [f["price"] for f in sr_flips[:2]],
+        }
+
         self.last_signal_time[symbol] = datetime.now()
 
         # Info MTF
         if mtf_direction:
             result["mtf_direction"] = mtf_direction
             result["mtf_timeframe"] = mtf_timeframe
+            result["mtf_score"] = mtf_score
 
-        logger.info("[{}] SR_FLIP {} — Entrada en S/R ({:.2f})".format(
-            symbol, direction, result.get("sr_level", 0)))
+        logger.info("[{}] {} {} | Mercado: {} | S/R: {:.2f} | Flip: {}".format(
+            symbol, direction, result.get("sr_reason", ""),
+            market_condition, result.get("sr_level", 0), result.get("sr_is_flip", False)))
         return result
+
+    # ═══════════════════════════════════════════════════════════
+    #  DETECCION DE CONDICION DE MERCADO
+    #  ALCISTA / BAJISTA / LATERAL
+    # ═══════════════════════════════════════════════════════════
+
+    def _check_mtf_condition(self, symbol: str, pc: dict):
+        """
+        Detecta la condicion del mercado usando M5 (o MTF configurado).
+        Retorna: (direction, score, condition)
+          - direction: "LONG" / "SHORT" / None
+          - score: 0-4
+          - condition: "ALCISTA" / "BAJISTA" / "LATERAL"
+        """
+        mtf_tf = pc["mtf_timeframe"]
+        if not mtf_tf:
+            return None, 0, "NORMAL"
+
+        try:
+            df_mtf = self.data_feed.get_ohlc(symbol, num_candles=100, timeframe=mtf_tf)
+            if df_mtf is None or len(df_mtf) < 50:
+                return None, 0, "NORMAL"
+
+            pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
+
+            # EMA rapida y lenta
+            ema_fast = df_mtf['close'].ewm(span=pc["mtf_ema_fast"], adjust=False).mean()
+            ema_slow = df_mtf['close'].ewm(span=pc["mtf_ema_slow"], adjust=False).mean()
+
+            # 1. Cruce EMA
+            bullish_ema = ema_fast.iloc[-1] > ema_slow.iloc[-1]
+            bearish_ema = ema_fast.iloc[-1] < ema_slow.iloc[-1]
+
+            # 2. Pendiente EMA (fuerza de tendencia)
+            slope_fast = (ema_fast.iloc[-1] - ema_fast.iloc[-5]) / pip_value
+            slope_slow = (ema_slow.iloc[-1] - ema_slow.iloc[-5]) / pip_value
+
+            slope_up = slope_fast > 1.0
+            slope_down = slope_fast < -1.0
+
+            # 3. Cambio de precio reciente
+            price_change = (df_mtf.iloc[-1]['close'] - df_mtf.iloc[-6]['close']) / pip_value
+            price_up = price_change > 3.0
+            price_down = price_change < -3.0
+
+            # 4. Estructura HH/HL o LH/LL
+            recent_highs = df_mtf['high'].iloc[-15:]
+            recent_lows = df_mtf['low'].iloc[-15:]
+            hh_hl = (recent_highs.iloc[-1] > recent_highs.iloc[-5] and
+                     recent_lows.iloc[-1] > recent_lows.iloc[-5])
+            lh_ll = (recent_highs.iloc[-1] < recent_highs.iloc[-5] and
+                     recent_lows.iloc[-1] < recent_lows.iloc[-5])
+
+            # Scores
+            up_score = (1 if bullish_ema else 0) + (1 if slope_up else 0) + \
+                       (1 if price_up else 0) + (1 if hh_hl else 0)
+            down_score = (1 if bearish_ema else 0) + (1 if slope_down else 0) + \
+                         (1 if price_down else 0) + (1 if lh_ll else 0)
+
+            # 5. Detectar LATERAL: sin tendencia clara
+            # Rango del precio en las ultimas 20 velas
+            range_20 = (df_mtf['high'].iloc[-20:].max() - df_mtf['low'].iloc[-20:].min()) / pip_value
+            # Las EMAs estan muy cerca
+            ema_distance = abs(ema_fast.iloc[-1] - ema_slow.iloc[-1]) / pip_value
+
+            # Es lateral si:
+            # - Score alcista y bajista son similares (ambos < 2, o diferencia < 2)
+            # - El rango de precio es pequeno
+            # - Las EMAs estan muy cerca
+            abs_slope = abs(slope_fast)
+            is_consolidating = (
+                (up_score < 3 and down_score < 3) or
+                abs(up_score - down_score) <= 1
+            )
+            is_flat_emas = ema_distance < 3.0
+            is_low_volatility = range_20 < 25  # Menos de 25 pips de rango en 20 velas M5
+
+            # Condicion LATERAL
+            if is_consolidating and (is_flat_emas or is_low_volatility):
+                # Mercado lateral: permitimos ambas direcciones con S/R
+                return None, max(up_score, down_score), "LATERAL"
+
+            # Condicion ALCISTA
+            if up_score >= 2 and up_score > down_score:
+                return "LONG", up_score, "ALCISTA"
+
+            # Condicion BAJISTA
+            if down_score >= 2 and down_score > up_score:
+                return "SHORT", down_score, "BAJISTA"
+
+            # Sin tendencia clara pero no es lateral definido
+            return None, max(up_score, down_score), "LATERAL"
+
+        except Exception as e:
+            logger.error("Error MTF {}: {}".format(symbol, e))
+            return None, 0, "NORMAL"
+
+    # ═══════════════════════════════════════════════════════════
+    #  BUSCAR ENTRADA SEGUN CONDICION DE MERCADO
+    # ═══════════════════════════════════════════════════════════
+
+    def _find_entry(self, symbol, df, current, market_condition,
+                     mtf_direction, supports, resistances, sr_flips,
+                     pip_value, digits, pc):
+        """
+        Busca entrada adaptada a la condicion del mercado:
+        - ALCISTA: solo BUY en soporte o flip
+        - BAJISTA: solo SELL en resistencia o flip
+        - LATERAL: BUY en soporte + SELL en resistencia (ambas direcciones)
+        """
+        current_price = current['close']
+        pullback_zone = pc.get("pullback_zone_pips", 5)
+
+        # ── PRIORIDAD 1: S/R Flip (la mejor senal en CUALQUIER mercado) ──
+        for flip in sr_flips:
+            flip_price = flip["price"]
+            flip_direction = flip["direction"]
+
+            # En tendencia, solo flip a favor
+            if market_condition == "ALCISTA" and flip_direction != "LONG":
+                continue
+            if market_condition == "BAJISTA" and flip_direction != "SHORT":
+                continue
+
+            dist = abs(current_price - flip_price) / pip_value
+
+            if flip_direction == "LONG":
+                if dist <= pullback_zone and current_price >= flip_price:
+                    if self._has_bullish_momentum(df, pc):
+                        return self._build_signal(
+                            symbol, df, "BUY", "LONG",
+                            flip_price, "S/R Flip (R>S)", pip_value, digits, pc,
+                            {"sr_flip": True, "sr_type": "RESISTANCE_TO_SUPPORT"}
+                        )
+            elif flip_direction == "SHORT":
+                if dist <= pullback_zone and current_price <= flip_price:
+                    if self._has_bearish_momentum(df, pc):
+                        return self._build_signal(
+                            symbol, df, "SELL", "SHORT",
+                            flip_price, "S/R Flip (S>R)", pip_value, digits, pc,
+                            {"sr_flip": True, "sr_type": "SUPPORT_TO_RESISTANCE"}
+                        )
+
+        # ── PRIORIDAD 2: Pullback a soporte (BUY) ──
+        # En ALCISTA o LATERAL: buscar compras en soporte
+        if market_condition in ("ALCISTA", "LATERAL"):
+            for s in supports:
+                s_price = s["price"]
+                dist = abs(current_price - s_price) / pip_value
+                # Precio cerca o arriba del soporte (zona de pullback)
+                if dist <= pullback_zone and current_price >= s_price * 0.998:
+                    if self._has_bullish_momentum(df, pc):
+                        return self._build_signal(
+                            symbol, df, "BUY", "LONG",
+                            s_price, "Soporte ({} toques)".format(s["touches"]),
+                            pip_value, digits, pc,
+                            {"sr_flip": False, "sr_type": "support", "touches": s["touches"]}
+                        )
+
+        # ── PRIORIDAD 3: Pullback a resistencia (SELL) ──
+        # En BAJISTA o LATERAL: buscar ventas en resistencia
+        if market_condition in ("BAJISTA", "LATERAL"):
+            for r in resistances:
+                r_price = r["price"]
+                dist = abs(current_price - r_price) / pip_value
+                # Precio cerca o debajo de la resistencia (zona de pullback)
+                if dist <= pullback_zone and current_price <= r_price * 1.002:
+                    if self._has_bearish_momentum(df, pc):
+                        return self._build_signal(
+                            symbol, df, "SELL", "SHORT",
+                            r_price, "Resistencia ({} toques)".format(r["touches"]),
+                            pip_value, digits, pc,
+                            {"sr_flip": False, "sr_type": "resistance", "touches": r["touches"]}
+                        )
+
+        # ── PRIORIDAD 4: Momentum a favor de tendencia (sin S/R cercano) ──
+        # Solo si hay direccion MTF clara y no hay S/R cercano
+        if market_condition == "ALCISTA" and mtf_direction == "LONG":
+            if self._has_bullish_momentum(df, pc) and self._strong_momentum(df, pc):
+                return self._build_signal(
+                    symbol, df, "BUY", "LONG",
+                    current_price, "Momentum alcista", pip_value, digits, pc,
+                    {"sr_flip": False, "sr_type": "momentum"}
+                )
+
+        if market_condition == "BAJISTA" and mtf_direction == "SHORT":
+            if self._has_bearish_momentum(df, pc) and self._strong_momentum(df, pc):
+                return self._build_signal(
+                    symbol, df, "SELL", "SHORT",
+                    current_price, "Momentum bajista", pip_value, digits, pc,
+                    {"sr_flip": False, "sr_type": "momentum"}
+                )
+
+        return None
 
     # ═══════════════════════════════════════════════════════════
     #  DETECCION DE SOPORTES Y RESISTENCIAS
@@ -155,6 +370,7 @@ class StrategyEngine:
         Detecta niveles de soporte y resistencia buscando:
         - Swing highs (resistencia): velas con highs mayores que vecinos
         - Swing lows (soporte): velas con lows menores que vecinos
+        Valida por numero de toques y retorna los mejores.
         """
         lookback = pc.get("sr_lookback", 50)
         min_touches = pc.get("sr_touches", 2)
@@ -208,11 +424,12 @@ class StrategyEngine:
         valid_supports = [s for s in supports if s["validated"]]
         valid_resistances = [r for r in resistances if r["validated"]]
 
-        # Ordenar por precio
-        valid_supports.sort(key=lambda x: x["price"], reverse=True)  # Mas cercano primero
-        valid_resistances.sort(key=lambda x: x["price"])  # Mas cercano primero
+        # Ordenar: soportes de mas cercano al precio actual, resistencias igual
+        current_price = df.iloc[-1]['close']
+        valid_supports.sort(key=lambda x: abs(x["price"] - current_price))
+        valid_resistances.sort(key=lambda x: abs(x["price"] - current_price))
 
-        return valid_supports[:3], valid_resistances[:3]
+        return valid_supports[:5], valid_resistances[:5]
 
     # ═══════════════════════════════════════════════════════════
     #  DETECCION DE S/R FLIP
@@ -226,12 +443,10 @@ class StrategyEngine:
         """
         flips = []
         current_price = df.iloc[-1]['close']
-        zone_pips = pc.get("sr_zone_pips", 3.0)
 
         # Resistencia que el precio rompio hacia arriba = ahora es SOPORTE
         for r in resistances:
             r_price = r["price"]
-            # El precio cerro arriba de la resistencia (la rompio)
             if current_price > r_price:
                 # Verificar que paso por debajo antes (confirma que fue resistencia)
                 recent = df.iloc[-20:]
@@ -263,99 +478,6 @@ class StrategyEngine:
         return flips
 
     # ═══════════════════════════════════════════════════════════
-    #  PULLBACK A S/R — LA ENTRADA PERFECTA
-    # ═══════════════════════════════════════════════════════════
-
-    def _find_pullback_to_sr(self, symbol, df, current, mtf_direction,
-                              supports, resistances, sr_flips,
-                              pip_value, digits, pc):
-        """
-        Busca la entrada perfecta: pullback a un nivel S/R o S/R flip.
-        Esta es la estrategia que el usuario dibujo con lineas rojas.
-        """
-        current_price = current['close']
-        pullback_zone = pc.get("pullback_zone_pips", 5)
-
-        # ── ESCENARIO 1: Pullback a S/R flip (mejor senal) ──
-        for flip in sr_flips:
-            flip_price = flip["price"]
-            direction = flip["direction"]
-
-            # Verificar que MTF coincide
-            if mtf_direction and direction != mtf_direction:
-                continue
-
-            dist = abs(current_price - flip_price) / pip_value
-
-            if direction == "LONG":
-                # Precio esta cerca o arriba del flip (pullback alcista)
-                if dist <= pullback_zone and current_price >= flip_price:
-                    # Verificar que hay momento alcista
-                    if self._has_bullish_momentum(df, pc):
-                        return self._build_signal(
-                            symbol, df, "BUY", "LONG", direction,
-                            flip_price, "S/R Flip (R→S)", pip_value, digits, pc,
-                            {"sr_flip": True, "sr_type": flip["type"]}
-                        )
-            elif direction == "SHORT":
-                if dist <= pullback_zone and current_price <= flip_price:
-                    if self._has_bearish_momentum(df, pc):
-                        return self._build_signal(
-                            symbol, df, "SELL", "SHORT", direction,
-                            flip_price, "S/R Flip (S→R)", pip_value, digits, pc,
-                            {"sr_flip": True, "sr_type": flip["type"]}
-                        )
-
-        # ── ESCENARIO 2: Pullback a soporte valido ──
-        for s in supports:
-            s_price = s["price"]
-            if mtf_direction and mtf_direction != "LONG":
-                continue
-
-            dist = abs(current_price - s_price) / pip_value
-            if dist <= pullback_zone and current_price >= s_price * 0.998:
-                if self._has_bullish_momentum(df, pc):
-                    return self._build_signal(
-                        symbol, df, "BUY", "LONG", "LONG",
-                        s_price, "Soporte ({})".format(s["touches"]) + " toques",
-                        pip_value, digits, pc,
-                        {"sr_flip": False, "sr_type": "support", "touches": s["touches"]}
-                    )
-
-        # ── ESCENARIO 3: Pullback a resistencia valida ──
-        for r in resistances:
-            r_price = r["price"]
-            if mtf_direction and mtf_direction != "SHORT":
-                continue
-
-            dist = abs(current_price - r_price) / pip_value
-            if dist <= pullback_zone and current_price <= r_price * 1.002:
-                if self._has_bearish_momentum(df, pc):
-                    return self._build_signal(
-                        symbol, df, "SELL", "SHORT", "SHORT",
-                        r_price, "Resistencia ({})".format(r["touches"]) + " toques",
-                        pip_value, digits, pc,
-                        {"sr_flip": False, "sr_type": "resistance", "touches": r["touches"]}
-                    )
-
-        # ── ESCENARIO 4: Momentum puro (sin S/R cercano pero con fuerte momentum) ──
-        if not sr_flips and not supports and not resistances:
-            if mtf_direction == "LONG" and self._has_bullish_momentum(df, pc):
-                return self._build_signal(
-                    symbol, df, "BUY", "LONG", "LONG",
-                    current_price, "Momentum puro", pip_value, digits, pc,
-                    {"sr_flip": False, "sr_type": "momentum"}
-                )
-            elif mtf_direction == "SHORT" and self._has_bearish_momentum(df, pc):
-                return self._build_signal(
-                    symbol, df, "SELL", "SHORT", "SHORT",
-                    current_price, "Momentum puro", pip_value, digits, pc,
-                    {"sr_flip": False, "sr_type": "momentum"}
-                )
-
-        return None
-
-    # ═══════════════════════════════════════════════════════════
     #  MOMENTUM CHECK
     # ═══════════════════════════════════════════════════════════
 
@@ -369,11 +491,20 @@ class StrategyEngine:
         ema_s = df['close'].ewm(span=pc["ema_slow"], adjust=False).mean()
         return ema_f.iloc[-1] < ema_s.iloc[-1]
 
+    def _strong_momentum(self, df: pd.DataFrame, pc: dict) -> bool:
+        """Verifica si el momentum es fuerte (no debil/cruce)."""
+        ema_f = df['close'].ewm(span=pc["ema_fast"], adjust=False).mean()
+        ema_s = df['close'].ewm(span=pc["ema_slow"], adjust=False).mean()
+        pip_value = self.params.get("pip_values", {}).get("XAUUSD", 0.0001)
+        # Separacion entre EMAs > 1 pip
+        gap = abs(ema_f.iloc[-1] - ema_s.iloc[-1]) / pip_value
+        return gap > 0.5
+
     # ═══════════════════════════════════════════════════════════
     #  CONSTRUIR SENAL
     # ═══════════════════════════════════════════════════════════
 
-    def _build_signal(self, symbol, df, signal, direction, sr_direction,
+    def _build_signal(self, symbol, df, signal, direction,
                       sr_level, sr_reason, pip_value, digits, pc, extra):
         current = df.iloc[-1]
         current_price = current['close']
@@ -392,7 +523,7 @@ class StrategyEngine:
             sl_price = round(current_price + sl_pips * pip_value, digits)
             tp_price = round(current_price - tp_pips * pip_value, digits)
 
-        # Mecha de rechazo
+        # Mecha de rechazo (wick)
         cr = current['high'] - current['low']
         if cr > 0 and direction == "LONG":
             lw = min(current['open'], current['close']) - current['low']
@@ -409,7 +540,15 @@ class StrategyEngine:
             wick_pips = 0
 
         is_flip = extra.get("sr_flip", False)
-        score = 3 if is_flip else 2  # Flip = mejor score
+        # Scoring: Flip=3, S/R con toques>=3=2.5, S/R normal=2, Momentum=1.5
+        if is_flip:
+            score = 3
+        elif extra.get("touches", 0) >= 3:
+            score = 2.5
+        elif extra.get("sr_type") in ("support", "resistance"):
+            score = 2
+        else:
+            score = 1.5
 
         conditions = {
             "sr_level": {
@@ -448,55 +587,6 @@ class StrategyEngine:
             "sr_is_flip": is_flip,
             "wick_ratio": round(wick_ratio, 2),
         }
-
-    # ═══════════════════════════════════════════════════════════
-    #  MTF — M5 confirma direccion
-    # ═══════════════════════════════════════════════════════════
-
-    def _check_mtf_direction(self, symbol: str, pc: dict):
-        mtf_tf = pc["mtf_timeframe"]
-        if not mtf_tf:
-            return None, 0
-
-        try:
-            df_mtf = self.data_feed.get_ohlc(symbol, num_candles=100, timeframe=mtf_tf)
-            if df_mtf is None or len(df_mtf) < 50:
-                return None, 0
-
-            pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
-
-            ema_fast = df_mtf['close'].ewm(span=pc["mtf_ema_fast"], adjust=False).mean()
-            ema_slow = df_mtf['close'].ewm(span=pc["mtf_ema_slow"], adjust=False).mean()
-
-            bullish = ema_fast.iloc[-1] > ema_slow.iloc[-1]
-            bearish = ema_fast.iloc[-1] < ema_slow.iloc[-1]
-
-            slope = (ema_fast.iloc[-1] - ema_fast.iloc[-5]) / pip_value
-            slope_up = slope > 1.0
-            slope_down = slope < -1.0
-
-            price_change = (df_mtf.iloc[-1]['close'] - df_mtf.iloc[-6]['close']) / pip_value
-            price_up = price_change > 3.0
-            price_down = price_change < -3.0
-
-            rh = df_mtf['high'].iloc[-10:]
-            rl = df_mtf['low'].iloc[-10:]
-            hh_hl = rh.iloc[-1] > rh.iloc[-3] and rl.iloc[-1] > rl.iloc[-3]
-            lh_ll = rh.iloc[-1] < rh.iloc[-3] and rl.iloc[-1] < rl.iloc[-3]
-
-            up_score = (1 if bullish else 0) + (1 if slope_up else 0) + (1 if price_up else 0) + (1 if hh_hl else 0)
-            down_score = (1 if bearish else 0) + (1 if slope_down else 0) + (1 if price_down else 0) + (1 if lh_ll else 0)
-
-            if up_score >= 2 and up_score > down_score:
-                return "LONG", up_score
-            elif down_score >= 2 and down_score > up_score:
-                return "SHORT", down_score
-
-            return None, 0
-
-        except Exception as e:
-            logger.error("Error MTF {}: {}".format(symbol, e))
-            return None, 0
 
     # ═══════════════════════════════════════════════════════════
     #  ATR
