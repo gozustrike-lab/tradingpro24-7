@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HÍBRIDO — DATA FEED (MT5 Connection)
-#  Extrae datos OHLC de MetaTrader 5
+#  TRADING BOT — DATA FEED (MT5 Connection) v8.1
+#  Soporte timeframe por par: M1 para XAUUSD, M15 para Forex
 # ═══════════════════════════════════════════════════════════════
 
 import MetaTrader5 as mt5
@@ -16,80 +16,67 @@ logger = logging.getLogger(__name__)
 
 
 class MT5Connection:
-    """Maneja la conexión con MetaTrader 5."""
+    """Maneja la conexion con MetaTrader 5."""
 
     def __init__(self):
         self.connected = False
         self.account_info = None
 
     def initialize(self):
-        """Inicializa la conexión con MT5."""
         try:
-            # Intentar inicializar
             if not mt5.initialize():
                 error_code, error_msg = mt5.last_error()
-                logger.error(f"MT5 inicialización fallida: {error_code} - {error_msg}")
+                logger.error("MT5 init fallida: {} - {}".format(error_code, error_msg))
                 return False
-
             self.connected = True
             self.account_info = mt5.account_info()
-
             if self.account_info:
                 logger.info(
-                    f"MT5 conectado — Cuenta: {self.account_info.login}, "
-                    f"Balance: ${self.account_info.balance:.2f}, "
-                    f"Broker: {self.account_info.server}"
+                    "MT5 conectado — Cuenta: {}, Balance: ${:.2f}, Broker: {}".format(
+                        self.account_info.login,
+                        self.account_info.balance,
+                        self.account_info.server
+                    )
                 )
             else:
-                logger.warning("MT5 conectado pero sin info de cuenta (¿terminal cerrada?)")
-
+                logger.warning("MT5 conectado pero sin info de cuenta")
             return True
-
         except Exception as e:
-            logger.error(f"Error conectando a MT5: {e}")
+            logger.error("Error conectando a MT5: {}".format(e))
             return False
 
     def shutdown(self):
-        """Cierra la conexión con MT5."""
         if self.connected:
             mt5.shutdown()
             self.connected = False
             logger.info("MT5 desconectado")
 
     def reconnect(self):
-        """Intenta reconectar a MT5."""
         self.shutdown()
         time.sleep(2)
         return self.initialize()
 
     def get_account_balance(self):
-        """Retorna el balance actual de la cuenta."""
         if not self.connected:
             return None
         account = mt5.account_info()
-        if account:
-            return account.balance
-        return None
+        return account.balance if account else None
 
     def get_account_equity(self):
-        """Retorna el equity actual de la cuenta."""
         if not self.connected:
             return None
         account = mt5.account_info()
-        if account:
-            return account.equity
-        return None
+        return account.equity if account else None
 
 
 class DataFeed:
-    """Extrae datos OHLC de MT5."""
+    """Extrae datos OHLC de MT5 con soporte timeframe por par."""
 
-    def __init__(self, connection: MT5Connection):
+    def __init__(self, connection):
         self.conn = connection
         self.mt5_timeframe = self._get_mt5_timeframe()
 
     def _get_mt5_timeframe(self):
-        """Convierte minutos a timeframe de MT5."""
         tf_map = {
             1: mt5.TIMEFRAME_M1,
             5: mt5.TIMEFRAME_M5,
@@ -101,102 +88,88 @@ class DataFeed:
         }
         return tf_map.get(MT5_TIMEFRAME, mt5.TIMEFRAME_M15)
 
-    def get_ohlc(self, symbol: str, num_candles: int = 100):
-        """
-        Obtiene datos OHLC para un par.
+    def _string_to_timeframe(self, tf_str):
+        tf_map = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+        return tf_map.get(tf_str.upper(), self.mt5_timeframe)
 
-        Args:
-            symbol: Par de divisas (ej: "EURUSD")
-            num_candles: Número de velas a obtener
-
-        Returns:
-            DataFrame de pandas con columnas: time, open, high, low, close, tick_volume
-            None si hay error
-        """
+    def get_ohlc(self, symbol, num_candles=100, timeframe=None):
+        """Obtiene datos OHLC con timeframe opcional por par."""
         if not self.conn.connected:
-            logger.warning(f"MT5 no conectado, no se pueden obtener datos de {symbol}")
             return None
-
         try:
-            rates = mt5.copy_rates_from_pos(symbol, self.mt5_timeframe, 0, num_candles)
+            if timeframe is not None:
+                tf = self._string_to_timeframe(timeframe)
+            else:
+                tf = self.mt5_timeframe
 
+            rates = mt5.copy_rates_from_pos(symbol, tf, 0, num_candles)
             if rates is None or len(rates) == 0:
-                error_code, error_msg = mt5.last_error()
-                logger.warning(f"No se obtuvieron datos de {symbol}: {error_code} - {error_msg}")
                 return None
-
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             df = df[['time', 'open', 'high', 'low', 'close', 'tick_volume']]
-
-            logger.debug(f"OHLC {symbol}: {len(df)} velas, última={df.iloc[-1]['time']}")
             return df
-
         except Exception as e:
-            logger.error(f"Error obteniendo OHLC de {symbol}: {e}")
+            logger.error("Error OHLC {}: {}".format(symbol, e))
             return None
 
-    def get_current_price(self, symbol: str):
-        """
-        Obtiene el precio actual (bid/ask) de un par.
+    def get_ohlcv(self, symbol, num_candles=100, timeframe=None):
+        """Alias de get_ohlc."""
+        return self.get_ohlc(symbol, num_candles, timeframe)
 
-        Returns:
-            dict con 'bid', 'ask', 'spread' o None
-        """
+    def get_current_price(self, symbol):
         if not self.conn.connected:
             return None
+        tick = mt5.symbol_info_tick(symbol)
+        if tick:
+            return tick.ask, tick.bid
+        return None
 
-        try:
-            tick = mt5.symbol_info_tick(symbol)
-            if tick is None:
-                return None
-
-            pip_value = STRATEGY["pip_values"].get(symbol, 0.0001)
-            spread = round((tick.ask - tick.bid) / pip_value, 1)
-
-            return {
-                "bid": tick.bid,
-                "ask": tick.ask,
-                "spread": spread,
-                "time": datetime.now(),
-            }
-        except Exception as e:
-            logger.error(f"Error obteniendo precio de {symbol}: {e}")
-            return None
-
-    def get_symbol_info(self, symbol: str):
-        """Obtiene información del símbolo (digitos, point, trade mode)."""
+    def get_symbol_info(self, symbol):
         if not self.conn.connected:
             return None
         return mt5.symbol_info(symbol)
 
-    def save_historical_data(self, symbol: str, num_candles: int = 1000):
-        """Guarda datos históricos en CSV para análisis."""
-        df = self.get_ohlc(symbol, num_candles)
-        if df is not None:
-            filepath = f"{DATA_DIR}/{symbol}_M15.csv"
-            df.to_csv(filepath, index=False)
-            logger.info(f"Datos guardados: {filepath}")
-            return filepath
+    def get_current_spread(self, symbol):
+        if not self.conn.connected:
+            return None
+        tick = mt5.symbol_info_tick(symbol)
+        info = mt5.symbol_info(symbol)
+        if tick and info:
+            spread_points = (tick.ask - tick.bid) / info.point
+            return spread_points * 0.1
         return None
 
-    def is_market_open(self, symbol: str = None):
-        """Verifica si el mercado está abierto."""
+    def save_historical_data(self, symbol, num_candles=1000):
+        if not self.conn.connected:
+            return None
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, self.mt5_timeframe, 0, num_candles)
+            if rates is None or len(rates) == 0:
+                return None
+            df = pd.DataFrame(rates)
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            return df
+        except Exception as e:
+            logger.error("Error guardando datos {}: {}".format(symbol, e))
+            return None
+
+    def is_market_open(self, symbol=None):
         if not self.conn.connected:
             return False
-
-        # Verificar si es fin de semana
-        now_utc = datetime.now(pytz.utc)
-        # Sábado todo el día y domingo antes de las 22:00 UTC (mercado cerrado)
-        if now_utc.weekday() == 5:  # Sábado
-            return False
-        if now_utc.weekday() == 6 and now_utc.hour < 22:  # Domingo antes de apertura
-            return False
-
-        # Verificar si el símbolo permite trading
-        if symbol:
-            info = mt5.symbol_info(symbol)
-            if info and not info.trade_mode:
+        try:
+            now_utc = datetime.now(pytz.utc)
+            day = now_utc.weekday()
+            if day >= 5:
                 return False
-
-        return True
+            return True
+        except Exception:
+            return True
