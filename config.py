@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — CONFIGURACION v8.1 MOMENTUM ICT
-#  ═══ XAUUSD M1 + Forex M15 ═══
+#  TRADINGPRO24-7 — CONFIGURACION v8.4 ICT PRO
+#  ═══ XAUUSD M1 + Forex M15 + S/R + Ondas + Reentrada ═══
 #  ═══ IMPORTANTE: actualizar.py NO toca este archivo ═══
 # ═══════════════════════════════════════════════════════════════
 
@@ -95,7 +95,19 @@ AI_VISION = {
     "timeout_seconds": 30,
 }
 
-# ─── BOT CONFIG v8.1 ────────────────────────────────────────
+# ─── AUTO-TRADING CONFIG v8.4 ─────────────────────────────
+AUTO_TRADE = True              # Activar ejecucion automatica en MT5
+AUTO_TRADE_VOLUME = 0.01       # Lotes por operacion
+
+# ─── REENTRADA AUTOMATICA v8.4 ─────────────────────────────
+# Abre UNA operacion extra a favor cuando la primera va ganando
+REENTRY_ENABLED = True          # Activar re-entrada
+REENTRY_MIN_PROFIT_PIPS = 5   # Minimo pips de ganancia para reentrar
+REENTRY_MAX_DISTANCE_PIPS = 30  # Maximo pips desde entrada original
+REENTRY_COOLDOWN_SECS = 120    # Segundos minimo entre entrada y re-entrada
+REENTRY_MAX_PER_SIGNAL = 1     # Maximo re-entradas por senal (1 = una extra)
+
+# ─── BOT CONFIG v8.4 ────────────────────────────────────────
 BOT = {
     "check_interval": 30,
     "min_timeframe_between_signals": 120,

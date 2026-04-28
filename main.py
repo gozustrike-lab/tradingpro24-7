@@ -1,9 +1,10 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — MAIN ENGINE v8.3 ICT PRO (FINAL)
+#  TRADINGPRO24-7 — MAIN ENGINE v8.4 ICT PRO + REENTRADA
 #  ═══ S/R Automatico + Auto-ejecucion MT5 ═══
 #  ═══ MTF: M5 + M1 para XAUUSD ═══
 #  ═══ Deteccion mercado: ALCISTA / BAJISTA / LATERAL ═══
-#  ═══ Abre operaciones automaticamente en tu cuenta MT5 ═══
+#  ═══ Pattern Recognition: Ondas / Montañitas ═══
+#  ═══ REENTRADA AUTOMATICA (1 extra a favor) ═══
 # ═══════════════════════════════════════════════════════════════
 
 import time
@@ -52,17 +53,28 @@ TELEGRAM_CHANNEL_ID = getattr(config, 'TELEGRAM_CHANNEL_ID', None)
 AUTO_TRADE = getattr(config, 'AUTO_TRADE', True)
 AUTO_TRADE_VOLUME = getattr(config, 'AUTO_TRADE_VOLUME', 0.01)
 
+# ─── Re-entrada config ──────────────────────────────────────
+REENTRY_ENABLED = getattr(config, 'REENTRY_ENABLED', True)
+REENTRY_MIN_PROFIT_PIPS = getattr(config, 'REENTRY_MIN_PROFIT_PIPS', 5)
+REENTRY_MAX_DISTANCE_PIPS = getattr(config, 'REENTRY_MAX_DISTANCE_PIPS', 30)
+REENTRY_COOLDOWN_SECS = getattr(config, 'REENTRY_COOLDOWN_SECS', 120)
+REENTRY_MAX_PER_SIGNAL = getattr(config, 'REENTRY_MAX_PER_SIGNAL', 1)
+
+MAGIC_NUMBER = 24701
+
 
 class TradingBot:
-    """Bot TradingPro24-7 v8.3 — S/R + MTF + Mercado adaptativo + Auto-trade."""
+    """Bot TradingPro24-7 v8.4 — S/R + Ondas + Reentrada automatica."""
 
     def __init__(self):
         logger.info("=" * 60)
-        logger.info("  TRADINGPRO24-7 — BOT v8.3 ICT PRO")
+        logger.info("  TRADINGPRO24-7 — BOT v8.4 ICT PRO + REENTRADA")
         logger.info("  S/R Automatico + S/R Flip + Pullback Entry")
+        logger.info("  Pattern Recognition: Ondas / Montañitas")
         logger.info("  Deteccion: ALCISTA / BAJISTA / LATERAL")
         logger.info("  XAUUSD: M5 dir + M1 entrada + S/R zones")
         logger.info("  Auto-ejecucion MT5: {}".format("ACTIVADA" if AUTO_TRADE else "DESACTIVADA"))
+        logger.info("  Re-entrada auto: {}".format("ACTIVADA ({} pips min)".format(REENTRY_MIN_PROFIT_PIPS) if REENTRY_ENABLED else "DESACTIVADA"))
         logger.info("=" * 60)
 
         self.mt5 = MT5Connection()
@@ -84,10 +96,15 @@ class TradingBot:
         self.signals_sent_today = 0
         self.signals_confirmed_today = 0
         self.trades_executed = 0
+        self.reentries_executed = 0
         self.cycle_count = 0
 
+        # Tracking de trades para re-entrada
+        # {symbol: {direction, entry_price, ticket, timestamp, reentry_done}}
+        self.active_trades = {}
+
     def initialize(self):
-        logger.info("Iniciando bot v8.3...")
+        logger.info("Iniciando bot v8.4...")
 
         if not self.mt5.initialize():
             logger.error("No se pudo conectar a MetaTrader 5")
@@ -103,6 +120,9 @@ class TradingBot:
             self.ai = None
             logger.warning("AI Vision deshabilitado (falta API key o esta desactivado)")
 
+        # Cargar trades abiertos existentes del bot
+        self._load_existing_trades()
+
         # Info de pares
         pair_info = []
         for p in FOREX_PAIRS:
@@ -115,30 +135,31 @@ class TradingBot:
                 pair_info.append("{}({})".format(p, tf))
 
         auto_status = "AUTO-TRADE ON ({} lotes)".format(AUTO_TRADE_VOLUME) if AUTO_TRADE else "SOLO SENALES (manual)"
+        reentry_status = "REENTRADA ON (+{} lote, min {} pips)".format(
+            AUTO_TRADE_VOLUME, REENTRY_MIN_PROFIT_PIPS) if REENTRY_ENABLED else "REENTRADA OFF"
         channel_status = "Canal activo" if TELEGRAM_CHANNEL_ID else "Canal no configurado"
 
         startup_msg = (
-            "TradingPro24-7 v8.3 ICT PRO — INICIADO\n"
+            "TradingPro24-7 v8.4 ICT PRO — INICIADO\n"
             "{}\n"
-            "S/R Automatico + Flip + Pullback\n"
-            "Mercado adaptativo: ALCISTA/BAJISTA/LATERAL\n"
+            "S/R + Flip + Ondas + Mercado Adaptativo\n"
+            "Lateral / Alcista / Bajista\n"
             "Pares: {}\n"
-            "XAUUSD: M5 dir + M1 entrada + S/R zones\n"
+            "XAUUSD: M5 dir + M1 entrada + S/R\n"
             "{}\n"
-            "Sin limite de perdidas (pruebas)\n"
+            "{}\n"
             "{}"
         ).format(
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ", ".join(pair_info),
-            auto_status,
-            channel_status
+            auto_status, reentry_status, channel_status
         )
         self.telegram.enviar_status(startup_msg)
 
-        logger.info("Bot v8.3 inicializado")
+        logger.info("Bot v8.4 inicializado")
         logger.info("Pares: {}".format(", ".join(pair_info)))
         logger.info("Auto-trade: {}".format(auto_status))
-        logger.info("Estrategia: S/R + Flip + Mercado Adaptativo")
+        logger.info("Re-entrada: {}".format(reentry_status))
         return True
 
     def run(self):
@@ -154,9 +175,10 @@ class TradingBot:
                 self._check_cycle()
                 self.cycle_count += 1
                 if self.cycle_count % 10 == 0:
-                    logger.info("Ciclo #{} | {} pares | {} senales | {} trades".format(
+                    logger.info("Ciclo #{} | {} pares | {} senales | {} trades | {} reentradas".format(
                         self.cycle_count, len(FOREX_PAIRS),
-                        self.signals_sent_today, self.trades_executed))
+                        self.signals_sent_today, self.trades_executed,
+                        self.reentries_executed))
                 else:
                     print(".", end="", flush=True)
                 time.sleep(BOT["check_interval"])
@@ -177,11 +199,21 @@ class TradingBot:
         if balance is None:
             balance = 0
 
+        # Limpiar trades cerrados del tracking
+        self._cleanup_closed_trades()
+
         for symbol in FOREX_PAIRS:
             try:
                 self._analyze_pair(symbol, balance)
             except Exception as e:
                 logger.error("Error analizando {}: {}".format(symbol, e))
+
+            # Verificar re-entrada para trades activos
+            if REENTRY_ENABLED and AUTO_TRADE:
+                try:
+                    self._check_reentry(symbol)
+                except Exception as e:
+                    logger.error("Error re-entrada {}: {}".format(symbol, e))
 
     def _analyze_pair(self, symbol, balance):
         signal = self.strategy.analyze(symbol)
@@ -198,11 +230,16 @@ class TradingBot:
         if not current_price or not direction:
             return
 
+        # Si ya hay un trade activo en este par, no abrir otro (esperar re-entrada)
+        if symbol in self.active_trades:
+            logger.debug("[{}] Trade activo existente, saltando nueva senal".format(symbol))
+            return
+
         logger.info("SENAL: {} {} [{}] Mercado:{} S/R={:.2f} Flip={}".format(
             symbol, direction, timeframe, market_condition,
             signal.get("sr_level", 0), signal.get("sr_is_flip", False)))
 
-        # Generar grafico CON niveles S/R
+        # Generar grafico CON niveles S/R y ondas
         df = self.data_feed.get_ohlc(symbol, num_candles=100, timeframe=timeframe)
         chart_levels = signal.get("chart_levels", {})
 
@@ -216,7 +253,6 @@ class TradingBot:
             "mtf_direction": signal.get("mtf_direction", ""),
         }
 
-        # Wave pattern data para el grafico
         wave_data = signal.get("wave_pattern", {})
 
         chart_path = self.charts.generate_candlestick_chart(
@@ -226,7 +262,6 @@ class TradingBot:
             wave_data=wave_data
         )
 
-        # Niveles SL/TP
         sl_price = signal.get("sl_price")
         tp_price = signal.get("tp_price")
         sl_pips = signal.get("sl_pips")
@@ -274,11 +309,9 @@ class TradingBot:
             "conditions": conds_list,
             "killzone": self._get_current_killzone(),
             "adx_value": 0,
-            # Nuevos campos v8.3
             "market_condition": market_condition,
             "sr_reason": sr_info,
             "mtf_direction": signal.get("mtf_direction", ""),
-            # Nuevos campos v8.4
             "wave_pattern": signal.get("wave_pattern", ""),
             "wave_repetitions": wave_data.get("repetitions", 0),
             "wave_exhaustion": wave_data.get("exhaustion", False),
@@ -291,7 +324,7 @@ class TradingBot:
         # ═══ AUTO-EJECUCION EN MT5 ═══
         if AUTO_TRADE:
             logger.info("Ejecutando trade automatico: {} {} @ {}".format(symbol, direction, current_price))
-            trade_result = self._execute_trade(symbol, direction, current_price, sl_price, tp_price)
+            trade_result = self._execute_trade(symbol, direction, current_price, sl_price, tp_price, is_reentry=False)
             if trade_result:
                 self.trades_executed += 1
                 order_id = trade_result.get("order", 0)
@@ -311,11 +344,202 @@ class TradingBot:
                 self.telegram.enviar_status(msg)
                 logger.info("TRADE MT5 OK: {} {} @ {} | Ticket: {}".format(
                     symbol, direction, current_price, order_id))
+
+                # Registrar trade activo para re-entrada
+                self.active_trades[symbol] = {
+                    "direction": direction,
+                    "entry_price": trade_result.get("price", current_price),
+                    "ticket": order_id,
+                    "timestamp": datetime.now(),
+                    "reentry_done": False,
+                    "reentry_count": 0,
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "signal": signal,
+                }
             else:
                 logger.warning("Trade fallo: {} {} @ {}".format(symbol, direction, current_price))
                 self.telegram.enviar_status("Trade fallo: {} {} | Revisar MT5".format(symbol, direction))
 
-    def _execute_trade(self, symbol, direction, price, sl, tp):
+    # ═══════════════════════════════════════════════════════════
+    #  REENTRADA AUTOMATICA
+    # ═══════════════════════════════════════════════════════════
+
+    def _check_reentry(self, symbol: str):
+        """
+        Verifica si un trade activo puede tener re-entrada.
+        Condiciones:
+        1. Trade activo en ganancia > REENTRY_MIN_PROFIT_PIPS pips
+        2. Tendencia sigue a favor (strategy confirma)
+        3. No se ha hecho re-entrada ya (o no se excede el maximo)
+        4. Tiempo minimo desde la entrada original
+        """
+        if symbol not in self.active_trades:
+            return
+
+        trade = self.active_trades[symbol]
+
+        # Ya se hizo re-entrada para este trade?
+        if trade["reentry_count"] >= REENTRY_MAX_PER_SIGNAL:
+            return
+
+        # Tiempo minimo desde entrada
+        elapsed = (datetime.now() - trade["timestamp"]).total_seconds()
+        if elapsed < REENTRY_COOLDOWN_SECS:
+            return
+
+        # Obtener posicion actual
+        direction = trade["direction"]
+        entry_price = trade["entry_price"]
+        pip_value = STRATEGY.get("pip_values", {}).get(symbol, 0.0001)
+
+        # Precio actual
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return
+
+        current_price = tick.ask if direction == "BUY" else tick.bid
+
+        # Calcular profit en pips
+        if direction == "BUY":
+            profit_pips = (current_price - entry_price) / pip_value
+        else:
+            profit_pips = (entry_price - current_price) / pip_value
+
+        # Verificar ganancia minima
+        if profit_pips < REENTRY_MIN_PROFIT_PIPS:
+            return
+
+        # Verificar que la distancia no es excesiva
+        if profit_pips > REENTRY_MAX_DISTANCE_PIPS:
+            logger.debug("[{}] Re-entrada: profit {} pips excede maximo {}".format(
+                symbol, round(profit_pips, 1), REENTRY_MAX_DISTANCE_PIPS))
+            return
+
+        # Verificar que la tendencia sigue a favor (confirmacion rapida)
+        pc = get_pair_config(symbol)
+        df = self.data_feed.get_ohlc(symbol, num_candles=50, timeframe=pc["timeframe"])
+        if df is None:
+            return
+
+        trend_confirms = False
+        if direction == "BUY":
+            trend_confirms = self._quick_bullish_check(df, pc)
+        else:
+            trend_confirms = self._quick_bearish_check(df, pc)
+
+        if not trend_confirms:
+            logger.debug("[{}] Re-entrada: tendencia no confirma {}".format(symbol, direction))
+            return
+
+        # ═══ EJECUTAR REENTRADA ═══
+        logger.info("REENTRADA: {} {} | Profit: {} pips | Entrada original: {}".format(
+            symbol, direction, round(profit_pips, 1), entry_price))
+
+        # SL/TP para la re-entrada: mismo SL, TP ajustado al precio actual
+        sl_price = trade["sl_price"]
+        tp_price = trade["tp_price"]
+
+        # Ajustar SL al precio actual (mantener misma distancia en pips)
+        digits = STRATEGY.get("digits", {}).get(symbol, 5)
+        original_sl_pips = abs(entry_price - sl_price) / pip_value
+        original_tp_pips = abs(tp_price - entry_price) / pip_value
+
+        if direction == "BUY":
+            new_sl = round(current_price - original_sl_pips * pip_value, digits)
+            new_tp = round(current_price + original_tp_pips * pip_value, digits)
+        else:
+            new_sl = round(current_price + original_sl_pips * pip_value, digits)
+            new_tp = round(current_price - original_tp_pips * pip_value, digits)
+
+        trade_result = self._execute_trade(symbol, direction, current_price, new_sl, new_tp, is_reentry=True)
+        if trade_result:
+            self.reentries_executed += 1
+            trade["reentry_done"] = True
+            trade["reentry_count"] += 1
+            order_id = trade_result.get("order", 0)
+
+            msg = (
+                "REENTRADA EJECUTADA\n"
+                "{} {} @ {}\n"
+                "Trade original: {} @ {}\n"
+                "Profit original: +{} pips\n"
+                "SL re-entrada: {}\n"
+                "TP re-entrada: {}\n"
+                "Ticket: {}\n"
+                "Lotes: {}".format(
+                    symbol, direction, current_price,
+                    direction, entry_price, round(profit_pips, 1),
+                    new_sl, new_tp, order_id, AUTO_TRADE_VOLUME
+                )
+            )
+            self.telegram.enviar_status(msg)
+            logger.info("REENTRADA OK: {} {} @ {} | Ticket: {}".format(
+                symbol, direction, current_price, order_id))
+        else:
+            logger.warning("Re-entrada fallo: {} {}".format(symbol, direction))
+
+    def _quick_bullish_check(self, df, pc) -> bool:
+        """Verificacion rapida de momento alcista."""
+        ema_f = df['close'].ewm(span=pc["ema_fast"], adjust=False).mean()
+        ema_s = df['close'].ewm(span=pc["ema_slow"], adjust=False).mean()
+        return ema_f.iloc[-1] > ema_s.iloc[-1] and ema_f.iloc[-1] > ema_f.iloc[-3]
+
+    def _quick_bearish_check(self, df, pc) -> bool:
+        """Verificacion rapida de momento bajista."""
+        ema_f = df['close'].ewm(span=pc["ema_fast"], adjust=False).mean()
+        ema_s = df['close'].ewm(span=pc["ema_slow"], adjust=False).mean()
+        return ema_f.iloc[-1] < ema_s.iloc[-1] and ema_f.iloc[-1] < ema_f.iloc[-3]
+
+    def _load_existing_trades(self):
+        """Carga trades abiertos del bot al iniciar (por si se reinicio)."""
+        if not AUTO_TRADE:
+            return
+        try:
+            positions = mt5.positions_get()
+            if positions is None:
+                return
+
+            for pos in positions:
+                if pos.magic == MAGIC_NUMBER and pos.symbol in FOREX_PAIRS:
+                    direction = "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL"
+                    self.active_trades[pos.symbol] = {
+                        "direction": direction,
+                        "entry_price": pos.price_open,
+                        "ticket": pos.ticket,
+                        "timestamp": datetime.now(),
+                        "reentry_done": False,
+                        "reentry_count": 0,
+                        "sl_price": pos.sl,
+                        "tp_price": pos.tp,
+                        "signal": {},
+                    }
+                    logger.info("Trade activo cargado: {} {} @ {} | Ticket: {}".format(
+                        pos.symbol, direction, pos.price_open, pos.ticket))
+        except Exception as e:
+            logger.error("Error cargando trades: {}".format(e))
+
+    def _cleanup_closed_trades(self):
+        """Elimina trades cerrados del tracking."""
+        closed = []
+        for symbol, trade in self.active_trades.items():
+            # Verificar si la posicion sigue abierta
+            try:
+                pos = mt5.positions_get(ticket=trade["ticket"])
+                if pos is None or len(pos) == 0:
+                    closed.append(symbol)
+                    logger.info("Trade cerrado: {} | Ticket: {}".format(symbol, trade["ticket"]))
+            except Exception:
+                pass
+
+        for symbol in closed:
+            del self.active_trades[symbol]
+
+    # ═══════════════════════════════════════════════════════════
+    #  EJECUCION DE TRADES
+    # ═══════════════════════════════════════════════════════════
+
+    def _execute_trade(self, symbol, direction, price, sl, tp, is_reentry=False):
         """Ejecuta la operacion directamente en MT5."""
         try:
             symbol_info = mt5.symbol_info(symbol)
@@ -323,21 +547,18 @@ class TradingBot:
                 logger.error("Simbolo no encontrado: {}".format(symbol))
                 return None
 
-            # Verificar que el simbolo esta disponible para trading
             if not symbol_info.visible:
                 logger.info("Haciendo visible el simbolo: {}".format(symbol))
                 if not mt5.symbol_select(symbol, True):
                     logger.error("No se pudo habilitar simbolo: {}".format(symbol))
                     return None
 
-            # Re-obtener info despues de seleccionar
             symbol_info = mt5.symbol_info(symbol)
             digits = symbol_info.digits
             price = round(price, digits)
             sl = round(sl, digits)
             tp = round(tp, digits)
 
-            # Tipo de orden
             if direction == "BUY":
                 order_type = mt5.ORDER_TYPE_BUY
                 price = mt5.symbol_info_tick(symbol).ask
@@ -348,7 +569,9 @@ class TradingBot:
             sl = round(sl, digits)
             tp = round(tp, digits)
 
-            # Request
+            # Comment diferente para re-entrada
+            comment = "TP247_v84_RE" if is_reentry else "TP247_v84"
+
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -358,8 +581,8 @@ class TradingBot:
                 "sl": sl,
                 "tp": tp,
                 "deviation": 20,
-                "magic": 24701,
-                "comment": "TP247_v83",
+                "magic": MAGIC_NUMBER,
+                "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
@@ -368,7 +591,7 @@ class TradingBot:
 
             if result is None:
                 error = mt5.last_error()
-                logger.error("Error enviando orden MT5: {} | Retcode: {}".format(error, error))
+                logger.error("Error enviando orden: {}".format(error))
                 return None
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -400,14 +623,16 @@ class TradingBot:
     def _send_daily_summary(self):
         stats = self.logger.get_stats()
         summary = (
-            "RESUMEN DIARIO v8.3\n"
+            "RESUMEN DIARIO v8.4\n"
             "Senales enviadas: {}\n"
             "Trades ejecutados: {}\n"
+            "Reentradas: {}\n"
             "Win rate: {:.0%}\n"
-            "Bot TradingPro24-7 v8.3 ICT PRO"
+            "Bot TradingPro24-7 v8.4 ICT PRO + Reentrada"
         ).format(
             self.signals_sent_today,
             self.trades_executed,
+            self.reentries_executed,
             stats.get("win_rate", 0)
         )
         self.telegram.enviar_status(summary)
