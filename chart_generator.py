@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADINGPRO24-7 — CHART GENERATOR v8.3
-#  ═══ Dibuja lineas S/R + Flip + SL/TP + Condicion mercado ═══
-#  ═══ Soporta M1 para XAUUSD + M15 para forex ═══
+#  TRADINGPRO24-7 — CHART GENERATOR v8.4
+#  ═══ Lineas S/R + Flip + Ondas/Montañitas + SL/TP ═══
+#  ═══ Numeracion de ondas + patron repetitivo ═══
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChartGenerator:
-    """Genera graficos de velas con S/R levels, flip zones y condicion de mercado."""
+    """Genera graficos con velas + S/R + Flip + Ondas numeradas."""
 
     def __init__(self, output_dir="screenshots"):
         self.output_dir = output_dir
@@ -40,15 +40,16 @@ class ChartGenerator:
         for key, val in self.style_config.items():
             plt.rcParams[key] = val
 
-    def generate_candlestick_chart(self, df, symbol, timeframe, signal=None, chart_levels=None):
+    def generate_candlestick_chart(self, df, symbol, timeframe, signal=None, chart_levels=None, wave_data=None):
         """
         Genera grafico con:
         - Velas japonesas
         - EMAs
         - Lineas S/R (soportes verdes, resistencias rojas)
         - Lineas S/R Flip (amarillas punteadas)
+        - Ondas numeradas (swing points conectados)
         - SL/TP
-        - Condicion de mercado en el titulo
+        - Info de patron y condicion de mercado
         """
         try:
             chart_df = df.copy()
@@ -91,41 +92,99 @@ class ChartGenerator:
                 ax.plot(range(len(chart_df)), ema_fast.values, color='#3b82f6', linewidth=1.2, label='EMA 20')
                 ax.plot(range(len(chart_df)), ema_slow.values, color='#f59e0b', linewidth=1.2, label='EMA 50')
 
-            # ── Dibujar lineas S/R desde chart_levels ──
+            # ── Lineas S/R ──
             if chart_levels:
-                # Soportes (verdes)
                 for sp in chart_levels.get("supports", []):
                     if sp is not None:
                         ax.axhline(y=sp, color='#22c55e', linestyle='-', linewidth=1.0, alpha=0.6)
                         ax.text(0, sp, " S: {:.2f}".format(sp),
-                                color='#22c55e', fontsize=8, fontweight='bold',
-                                va='bottom', ha='left',
+                                color='#22c55e', fontsize=7, fontweight='bold', va='bottom', ha='left',
                                 bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#22c55e', alpha=0.8))
 
-                # Resistencias (rojas)
                 for rs in chart_levels.get("resistances", []):
                     if rs is not None:
                         ax.axhline(y=rs, color='#ef4444', linestyle='-', linewidth=1.0, alpha=0.6)
                         ax.text(0, rs, " R: {:.2f}".format(rs),
-                                color='#ef4444', fontsize=8, fontweight='bold',
-                                va='top', ha='left',
+                                color='#ef4444', fontsize=7, fontweight='bold', va='top', ha='left',
                                 bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#ef4444', alpha=0.8))
 
-                # S/R Flips (amarillos punteados)
                 for fp in chart_levels.get("flips", []):
                     if fp is not None:
                         ax.axhline(y=fp, color='#eab308', linestyle='--', linewidth=1.5, alpha=0.8)
                         ax.text(len(chart_df)-1, fp, " FLIP: {:.2f} ".format(fp),
-                                color='#eab308', fontsize=8, fontweight='bold',
-                                va='center', ha='right',
+                                color='#eab308', fontsize=8, fontweight='bold', va='center', ha='right',
                                 bbox=dict(boxstyle='round,pad=0.2', facecolor='#16213e', edgecolor='#eab308', alpha=0.9))
+
+            # ── Dibujar ondas/montañitas numeradas ──
+            if wave_data and wave_data.get("swing_points"):
+                swing_points = wave_data["swing_points"]
+                if len(swing_points) >= 2:
+                    # Mapear swing points a posiciones del grafico
+                    # Los swing_points son del dataframe completo (200 velas),
+                    # necesitamos mapear a los 60 velas del chart
+                    wave_positions = []
+                    for sp_type, sp_price in swing_points:
+                        # Encontrar la vela mas cercana al precio del swing
+                        for i, (idx, row) in enumerate(chart_df.iterrows()):
+                            if sp_type == "HIGH" and abs(row['High'] - sp_price) < 0.01:
+                                wave_positions.append((i, sp_price, sp_type))
+                                break
+                            elif sp_type == "LOW" and abs(row['Low'] - sp_price) < 0.01:
+                                wave_positions.append((i, sp_price, sp_type))
+                                break
+
+                    # Dibujar lineas conectando swing points
+                    if len(wave_positions) >= 2:
+                        xs = [wp[0] for wp in wave_positions]
+                        ys = [wp[1] for wp in wave_positions]
+                        ax.plot(xs, ys, color='#a78bfa', linewidth=1.0, alpha=0.6, linestyle='-', zorder=3)
+
+                        # Numerar los swing points
+                        wave_num = 1
+                        for i, (wp_x, wp_y, wp_type) in enumerate(wave_positions):
+                            if wp_type == "HIGH":
+                                # Pico (montañita arriba)
+                                marker_color = '#c084fc'
+                                label = str(wave_num)
+                                wave_num += 1
+                            else:
+                                # Valle
+                                marker_color = '#67e8f9'
+                                label = str(wave_num)
+                                wave_num += 1
+
+                            ax.plot(wp_x, wp_y, 'o', color=marker_color, markersize=5, zorder=4)
+                            offset = 0.3 if wp_type == "HIGH" else -0.6
+                            ax.text(wp_x + 1, wp_y + offset * (chart_df['Close'].max() - chart_df['Close'].min()) * 0.01,
+                                    label, color=marker_color, fontsize=7, fontweight='bold', ha='center')
+
+            # ── Info de patron en esquina superior ──
+            if wave_data and wave_data.get("pattern_type") != "INSUFICIENTE" and wave_data.get("pattern_type") != "N/A":
+                pattern_text = wave_data.get("pattern_type", "")
+                reps = wave_data.get("repetitions", 0)
+                move = wave_data.get("move_type", "")
+                exhaustion = wave_data.get("exhaustion", False)
+
+                info_parts = []
+                if reps >= 2:
+                    info_parts.append("Rep: {}x".format(reps))
+                if move and move != "NEUTRAL":
+                    info_parts.append(move.replace("_", " "))
+                if exhaustion:
+                    info_parts.append("AGOTADO!")
+
+                if info_parts:
+                    info_text = " | ".join(info_parts)
+                    ax.text(0.02, 0.95, info_text, transform=ax.transAxes,
+                            color='#fbbf24', fontsize=8, fontweight='bold',
+                            va='top', ha='left',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a2e',
+                                      edgecolor='#fbbf24', alpha=0.9))
 
             # ── SL/TP lines ──
             if signal:
                 signal_type = signal.get('type', '')
                 mode_text = signal.get('mode', 'S/R ICT')
-
-                # Condicion de mercado
                 market_cond = signal.get('market_condition', '')
                 mtf_dir = signal.get('mtf_direction', '')
 
@@ -138,25 +197,21 @@ class ChartGenerator:
                 title_parts.append(signal_type)
                 title = " | ".join(title_parts)
 
-                # TP line (green dashed)
                 if 'tp' in signal and signal['tp']:
                     ax.axhline(y=signal['tp'], color='#22c55e', linestyle='--', linewidth=1.5, alpha=0.9)
                     ax.text(len(chart_df)-1, signal['tp'], " TP: {:.5f}".format(signal['tp']),
                             color='#22c55e', fontsize=9, fontweight='bold', va='bottom')
 
-                # SL line (red dashed)
                 if 'sl' in signal and signal['sl']:
                     ax.axhline(y=signal['sl'], color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
                     ax.text(len(chart_df)-1, signal['sl'], " SL: {:.5f}".format(signal['sl']),
                             color='#ef4444', fontsize=9, fontweight='bold', va='top')
 
-                # Entry point marker
                 if 'entry' in signal and signal['entry']:
                     entry_y = signal['entry']
                     ax.axhline(y=entry_y, color='#a855f7', linestyle='-.', linewidth=1, alpha=0.7)
                     ax.text(len(chart_df)//2, entry_y, " ENTRY ",
-                            color='#a855f7', fontsize=8, fontweight='bold',
-                            va='bottom', ha='center')
+                            color='#a855f7', fontsize=8, fontweight='bold', va='bottom', ha='center')
             else:
                 title = "TradingPro24-7 | {} | {}".format(symbol, timeframe)
 

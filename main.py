@@ -216,10 +216,14 @@ class TradingBot:
             "mtf_direction": signal.get("mtf_direction", ""),
         }
 
+        # Wave pattern data para el grafico
+        wave_data = signal.get("wave_pattern", {})
+
         chart_path = self.charts.generate_candlestick_chart(
             df, symbol, timeframe,
             signal=chart_signal_data,
-            chart_levels=chart_levels
+            chart_levels=chart_levels,
+            wave_data=wave_data
         )
 
         # Niveles SL/TP
@@ -274,6 +278,11 @@ class TradingBot:
             "market_condition": market_condition,
             "sr_reason": sr_info,
             "mtf_direction": signal.get("mtf_direction", ""),
+            # Nuevos campos v8.4
+            "wave_pattern": signal.get("wave_pattern", ""),
+            "wave_repetitions": wave_data.get("repetitions", 0),
+            "wave_exhaustion": wave_data.get("exhaustion", False),
+            "wave_move_type": wave_data.get("move_type", ""),
         }
 
         self.telegram.enviar_senal(telegram_signal, chart_path)

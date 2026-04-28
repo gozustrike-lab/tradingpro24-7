@@ -114,6 +114,23 @@ class TelegramBot:
         if sr_reason:
             msg.append("\U0001F3AF {}".format(sr_reason))
 
+        # v8.4: Wave pattern info
+        wave_reps = s.get("wave_repetitions", 0)
+        wave_exhaust = s.get("wave_exhaustion", False)
+        wave_move = s.get("wave_move_type", "")
+
+        if wave_reps >= 2:
+            msg.append("\U0001F30A Patron repite: {}x".format(wave_reps))
+        if wave_exhaust:
+            msg.append("\u26A0\uFE0F AGOTAMIENTO detectado!")
+        if wave_move and wave_move not in ("NEUTRAL", ""):
+            wave_labels = {
+                "IMPULSIVO_ALCISTA": "\U0001F4C8 Impulso alcista",
+                "IMPULSIVO_BAJISTA": "\U0001F4C9 Impulso bajista",
+                "RANGO": "\u2194\uFE0F Rango/Consolidacion",
+            }
+            msg.append(wave_labels.get(wave_move, "\U0001F4CA {}".format(wave_move)))
+
         # ── BLOQUE DE CODIGO COPIABLE ──
         msg.append("\U0001F4CB Copiar niveles:")
         code_block = (
@@ -152,7 +169,7 @@ class TelegramBot:
         if kz:
             msg.append("\U0001F3AF Killzone: {}".format(kz))
 
-        msg.append("Bot TradingPro24-7 \u2014 v8.3 ICT PRO")
+        msg.append("Bot TradingPro24-7 \u2014 v8.4 ICT PRO + Ondas")
 
         mensaje = "\n".join(msg)
 
