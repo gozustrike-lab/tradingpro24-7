@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════════
-#  TRADING BOT HIBRIDO — STRATEGY ENGINE v8.0 MOMENTUM ICT
+#  TRADING BOT HIBRIDO — STRATEGY ENGINE v8.1 MOMENTUM ICT
 #  ═══ Estrategia unificada: Seguir momentum del mercado ═══
-#  ═══ R:R 1:1 dinamico (SL = TP = 12-22 pips via ATR) ═══
-#  ═══ Killzones ampliadas (13h cobertura) ═══
-#  ═══ Objetivo: 8-15 senales diarias, 70-80% win rate ═══
+#  ═══ R:R 1:1 dinamico (SL = TP via ATR) ═══
+#  ═══ NUEVO: XAUUSD en M1 con params especificos ═══
+#  ═══ Objetivo: 10-20+ senales diarias, 70-80% win rate ═══
 # ═══════════════════════════════════════════════════════════════
 
 import pandas as pd
@@ -16,9 +16,52 @@ from data_feed import DataFeed
 
 logger = logging.getLogger(__name__)
 
+# ═══════════════════════════════════════════════════════════════
+#  CONFIGURACION POR PAR — XAUUSD usa M1, el resto M15
+# ═══════════════════════════════════════════════════════════════
+
+PAIR_CONFIG = {
+    "XAUUSD": {
+        "timeframe": "M1",
+        "ema_fast": 10,           # EMA rapida para M1
+        "ema_slow": 25,           # EMA lenta para M1
+        "atr_period": 10,         # ATR rapido para M1
+        "atr_multiplier": 1.8,    # Mas room para volatilidad del oro
+        "sl_min": 20.0,           # SL minimo 20 pips
+        "sl_max": 35.0,           # SL maximo 35 pips
+        "spread_limit": 5.0,      # Spread maximo 5 pips (oro es mas ancho)
+        "cooldown": 60,           # 1 minuto entre señales (M1)
+        "score_min": 2,           # 2 de 4 para entrar
+        "momentum_threshold": 3,  # 3 de 4 indicadores alineados
+        "min_price_change": 5.0,  # 5 pips de cambio minimo (oro se mueve rapido)
+        "min_slope": 2.0,         # Pendiente EMA minima en pips
+    },
+    # DEFAULT para Forex majors (EURUSD, GBPUSD, etc.)
+    "_DEFAULT": {
+        "timeframe": "M15",
+        "ema_fast": 20,
+        "ema_slow": 50,
+        "atr_period": 14,
+        "atr_multiplier": 1.2,
+        "sl_min": 12.0,
+        "sl_max": 22.0,
+        "spread_limit": 3.0,
+        "cooldown": 120,          # 2 minutos
+        "score_min": 2,
+        "momentum_threshold": 3,
+        "min_price_change": 3.0,
+        "min_slope": 1.0,
+    },
+}
+
+
+def get_pair_config(symbol: str) -> dict:
+    """Retorna config especifica del par o default."""
+    return PAIR_CONFIG.get(symbol, PAIR_CONFIG["_DEFAULT"])
+
 
 class StrategyEngine:
-    """Motor de estrategia Momentum ICT v8.0 — Seguir direccion, 1:1 R:R."""
+    """Motor de estrategia Momentum ICT v8.1 — Seguir direccion, 1:1 R:R, XAUUSD M1."""
 
     def __init__(self, data_feed: DataFeed):
         self.data_feed = data_feed
@@ -31,46 +74,51 @@ class StrategyEngine:
     # ═══════════════════════════════════════════════════════════
 
     def analyze(self, symbol: str):
-        """Analiza un par con estrategia Momentum ICT."""
+        """Analiza un par con estrategia Momentum ICT (soporta M1 y M15)."""
+        pc = get_pair_config(symbol)
+
         # Filtro 1: Sesion activa
         if not self._is_session_active(symbol):
             return None
 
-        # Filtro 2: Killzone ICT (ampliada para mas señales)
+        # Filtro 2: Killzone ICT
         if not self._is_killzone_active(symbol):
             return None
 
-        # Obtener datos
-        df = self.data_feed.get_ohlc(symbol, num_candles=100)
+        # Obtener datos con timeframe del par
+        timeframe = pc["timeframe"]
+        num_candles = 200 if timeframe == "M1" else 100  # Mas velas para M1
+
+        df = self.data_feed.get_ohlc(symbol, num_candles=num_candles, timeframe=timeframe)
         if df is None or len(df) < 50:
             return None
 
-        # Filtro 3: Spread bajo
+        # Filtro 3: Spread bajo (limite por par)
         spread = self.data_feed.get_current_spread(symbol) if hasattr(self.data_feed, 'get_current_spread') else None
-        if spread is not None and spread > 3.0:
+        if spread is not None and spread > pc["spread_limit"]:
             return None
 
-        # Filtro 4: Cooldown entre señales (2 min)
-        if not self._check_signal_cooldown(symbol):
+        # Filtro 4: Cooldown entre señales
+        if not self._check_signal_cooldown(symbol, pc["cooldown"]):
             return None
 
-        # Detectar direccion del momentum
-        direction = self._detect_momentum(symbol, df)
+        # Detectar direccion del momentum (con params del par)
+        direction = self._detect_momentum(symbol, df, pc)
         if direction is None:
             return None
 
         # Evaluar condiciones de entrada
-        result = self._evaluate_entry(symbol, df, direction)
+        result = self._evaluate_entry(symbol, df, direction, pc)
         if result is None or not result.get("passed"):
             return None
 
-        # FVG Detection (bonus score)
+        # FVG Detection (bonus)
         fvg = self._detect_fvg(symbol, df, direction)
         if fvg:
             result["fvg"] = fvg
             result["conditions"]["fvg"] = {
                 "passed": True,
-                "detail": f"FVG detectado: {fvg['type']} ({fvg['size_pips']:.1f} pips)"
+                "detail": f"FVG: {fvg['type']} ({fvg['size_pips']:.1f} pips)"
             }
             result["score"] = result.get("score", 0) + 1
             result["max_score"] = result.get("max_score", 4) + 1
@@ -81,7 +129,7 @@ class StrategyEngine:
             result["order_block"] = ob
             result["conditions"]["order_block"] = {
                 "passed": True,
-                "detail": f"Order Block: {ob['type']} @ {ob['level']:.5f}"
+                "detail": f"OB: {ob['type']} @ {ob['level']:.5f}"
             }
             result["score"] = result.get("score", 0) + 1
             result["max_score"] = result.get("max_score", 4) + 1
@@ -91,61 +139,60 @@ class StrategyEngine:
         result["timestamp"] = datetime.now().isoformat()
         result["current_price"] = df.iloc[-1]['close']
         result["market_mode"] = "MOMENTUM"
+        result["timeframe"] = timeframe
         self.last_signal_time[symbol] = datetime.now()
 
-        logger.debug(f"[{symbol}] Momentum {direction} detectado — Score: {result['score']}/{result['max_score']}")
+        logger.debug(f"[{symbol}] Momentum {direction} ({timeframe}) — Score: {result['score']}/{result['max_score']}")
         return result
 
     # ═══════════════════════════════════════════════════════════
-    #  DETECCION DE MOMENTUM (direccion del mercado)
+    #  DETECCION DE MOMENTUM (4 indicadores)
     # ═══════════════════════════════════════════════════════════
 
-    def _detect_momentum(self, symbol: str, df: pd.DataFrame) -> str:
-        """
-        Detecta la direccion del momentum actual usando multiples indicadores.
-        Requiere al menos 3 de 4 indicadores alineados.
-        """
+    def _detect_momentum(self, symbol: str, df: pd.DataFrame, pc: dict) -> str:
+        """Detecta direccion del momentum con params adaptados al par/timeframe."""
         pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
 
-        # Indicador 1: Cruce EMA (20 y 50)
-        ema_fast = df['close'].ewm(span=20, adjust=False).mean()
-        ema_slow = df['close'].ewm(span=50, adjust=False).mean()
+        # Usar EMA del par (XAUUSD=10/25, Forex=20/50)
+        ema_fast = df['close'].ewm(span=pc["ema_fast"], adjust=False).mean()
+        ema_slow = df['close'].ewm(span=pc["ema_slow"], adjust=False).mean()
         ema_bullish = ema_fast.iloc[-1] > ema_slow.iloc[-1]
         ema_bearish = ema_fast.iloc[-1] < ema_slow.iloc[-1]
 
-        # Indicador 2: Pendiente EMA (ultimas 5 velas)
+        # Pendiente EMA (5 velas)
         ema_slope = (ema_fast.iloc[-1] - ema_fast.iloc[-5]) / pip_value
-        slope_up = ema_slope > 1.0
-        slope_down = ema_slope < -1.0
+        slope_up = ema_slope > pc["min_slope"]
+        slope_down = ema_slope < -pc["min_slope"]
 
-        # Indicador 3: Cambio de precio (5 velas)
-        price_change = (df.iloc[-1]['close'] - df.iloc[-6]['close']) / pip_value
-        price_up = price_change > 3.0
-        price_down = price_change < -3.0
+        # Cambio de precio (5 velas)
+        lookback = min(6, len(df) - 1)
+        price_change = (df.iloc[-1]['close'] - df.iloc[-lookback]['close']) / pip_value
+        price_up = price_change > pc["min_price_change"]
+        price_down = price_change < -pc["min_price_change"]
 
-        # Indicador 4: Estructura de precio (HH/HL o LH/LL)
+        # Estructura de precio (HH/HL o LH/LL)
         recent = df.iloc[-5:]
         hh_hl = recent['high'].iloc[-1] > recent['high'].iloc[-3] and recent['low'].iloc[-1] > recent['low'].iloc[-3]
         lh_ll = recent['high'].iloc[-1] < recent['high'].iloc[-3] and recent['low'].iloc[-1] < recent['low'].iloc[-3]
 
-        # Puntuacion alcista vs bajista
+        # Puntuacion
+        threshold = pc["momentum_threshold"]
         up_score = (1 if ema_bullish else 0) + (1 if slope_up else 0) + (1 if price_up else 0) + (1 if hh_hl else 0)
         down_score = (1 if ema_bearish else 0) + (1 if slope_down else 0) + (1 if price_down else 0) + (1 if lh_ll else 0)
 
-        # Requiere al menos 3 de 4 indicadores alineados
-        if up_score >= 3 and up_score > down_score:
+        if up_score >= threshold and up_score > down_score:
             return "LONG"
-        elif down_score >= 3 and down_score > up_score:
+        elif down_score >= threshold and down_score > up_score:
             return "SHORT"
 
-        return None  # Sin momentum claro
+        return None
 
     # ═══════════════════════════════════════════════════════════
     #  EVALUACION DE ENTRADA (4 condiciones ICT)
     # ═══════════════════════════════════════════════════════════
 
-    def _evaluate_entry(self, symbol: str, df: pd.DataFrame, direction: str):
-        """Evalua 4 condiciones para entrada: pullback, sweep, wick, close."""
+    def _evaluate_entry(self, symbol: str, df: pd.DataFrame, direction: str, pc: dict):
+        """Evalua 4 condiciones con params adaptados al par."""
         pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
         digits = self.params.get("digits", {}).get(symbol, 5)
         current = df.iloc[-1]
@@ -171,7 +218,7 @@ class StrategyEngine:
         if is_pullback:
             score += 1
 
-        # ── C2: Sweep de liquidez (BONUS — no obligatorio) ──
+        # ── C2: Sweep de liquidez (BONUS) ──
         lb = self.params.get("lookback_candles", 15)
         if direction == "LONG":
             prev_low = df['low'].iloc[-lb:-3].min()
@@ -221,7 +268,7 @@ class StrategyEngine:
         if has_wick:
             score += 1
 
-        # ── C4: Cierre fuerte en direccion del momentum ──
+        # ── C4: Cierre fuerte ──
         if cr > 0:
             if direction == "LONG":
                 close_pct = (current['close'] - current['low']) / cr * 100
@@ -240,16 +287,13 @@ class StrategyEngine:
         if strong_close:
             score += 1
 
-        # ── SL/TP dinamico basado en ATR (1:1 R:R) ──
-        atr = self._calculate_atr(df, 14)
+        # ── SL/TP dinamico via ATR (1:1 R:R) adaptado al par ──
+        atr = self._calculate_atr(df, pc["atr_period"])
         atr_pips = atr / pip_value
-
-        # SL = TP = 1.2x ATR, clamped a 12-22 pips
-        sl_pips = max(12.0, min(22.0, round(atr_pips * 1.2, 1)))
+        sl_pips = max(pc["sl_min"], min(pc["sl_max"], round(atr_pips * pc["atr_multiplier"], 1)))
         tp_pips = sl_pips  # 1:1 exacto
 
-        # Score minimo: 2 de 4 (pullback + wick, o pullback + sweep, etc.)
-        min_score = self.params.get("min_score", 2)
+        min_score = pc["score_min"]
 
         return {
             "signal": "BUY" if direction == "LONG" else "SELL",
@@ -261,7 +305,6 @@ class StrategyEngine:
             "sl_pips": sl_pips,
             "tp_pips": tp_pips,
             "needs_ai_confirmation": True,
-            # Keys compatibles con main.py para Telegram:
             "ema_trend": "bullish" if direction == "LONG" else "bearish",
             "sweep_passed": sweep > 0,
             "sweep_pips": round(max(sweep, 0), 1),
@@ -274,15 +317,14 @@ class StrategyEngine:
         }
 
     # ═══════════════════════════════════════════════════════════
-    #  ATR (Average True Range) para SL/TP dinamico
+    #  ATR para SL/TP dinamico
     # ═══════════════════════════════════════════════════════════
 
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
-        """Calcula ATR para SL/TP dinamico adaptado a volatilidad."""
+        """Calcula ATR para SL/TP adaptado a volatilidad."""
         recent = df.iloc[-period:]
         if len(recent) < 2:
-            return 0.001  # Default seguro
-
+            return 0.001
         trs = []
         for i in range(1, len(recent)):
             h = recent['high'].iloc[i]
@@ -290,15 +332,14 @@ class StrategyEngine:
             pc = recent['close'].iloc[i - 1]
             tr = max(h - l, abs(h - pc), abs(l - pc))
             trs.append(tr)
-
         return np.mean(trs)
 
     # ═══════════════════════════════════════════════════════════
-    #  KILLZONES ICT — AMPLIADAS (13 horas cobertura)
+    #  KILLZONES ICT (13 horas cobertura)
     # ═══════════════════════════════════════════════════════════
 
     def _is_killzone_active(self, symbol: str) -> bool:
-        """Killzones ampliadas para maximizar oportunidades de señal."""
+        """Killzones ampliadas — XAUUSD opera en killzone extendida."""
         from datetime import datetime as dt
         import pytz
 
@@ -306,19 +347,25 @@ class StrategyEngine:
         current_hour = now_utc.hour
         day = now_utc.weekday()
 
-        # No operar domingos ni sabados
         if day >= 5:
             return False
 
-        # Killzones v8.0 — AMPLIADAS para mas señales
-        # Zona 1: London Open + transicion (6-12 UTC = 1AM-7AM Peru)
-        # Zona 2: NY Open + overlap (12-17 UTC = 7AM-12PM Peru)
-        # Zona 3: London Close extendida (15-19 UTC = 10AM-2PM Peru)
-        zones = [
-            ("London+NY Bridge", 6, 12),
-            ("NY Open Premium", 12, 17),
-            ("London Close+", 15, 19),
-        ]
+        if symbol == "XAUUSD":
+            # XAUUSD: killzone extendida 5-20 UTC (15 horas)
+            # Oro se mueve bien en sesion asiatica tambien
+            zones = [
+                ("Asian+London", 5, 10),
+                ("London Open", 7, 12),
+                ("NY Open Premium", 12, 17),
+                ("London Close+", 15, 20),
+            ]
+        else:
+            # Forex majors: killzones normales
+            zones = [
+                ("London+NY Bridge", 6, 12),
+                ("NY Open Premium", 12, 17),
+                ("London Close+", 15, 19),
+            ]
 
         for zone_name, start, end in zones:
             if start <= current_hour < end:
@@ -328,23 +375,20 @@ class StrategyEngine:
         return False
 
     # ═══════════════════════════════════════════════════════════
-    #  FVG (FAIR VALUE GAP) DETECTION — Bonus
+    #  FVG DETECTION (Bonus)
     # ═══════════════════════════════════════════════════════════
 
     def _detect_fvg(self, symbol: str, df: pd.DataFrame, direction: str) -> dict:
-        """Detecta Fair Value Gaps — bonus de score."""
+        """Detecta Fair Value Gaps."""
         if direction is None or len(df) < 5:
             return None
-
         pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
         digits = self.params.get("digits", {}).get(symbol, 5)
         fvg_min_pips = self.params.get("fvg_min_pips", 3)
 
         for i in range(-10, -2):
             c1 = df.iloc[i]
-            c2 = df.iloc[i + 1]
             c3 = df.iloc[i + 2]
-
             if direction == "LONG":
                 gap_top = c3['low']
                 gap_bottom = c1['high']
@@ -354,13 +398,7 @@ class StrategyEngine:
                     if gap_pips >= fvg_min_pips:
                         current_price = df.iloc[-1]['close']
                         if gap_bottom <= current_price <= gap_top:
-                            return {
-                                "type": "BULLISH",
-                                "top": round(gap_top, digits),
-                                "bottom": round(gap_bottom, digits),
-                                "size_pips": round(gap_pips, 1),
-                                "candle_index": i,
-                            }
+                            return {"type": "BULLISH", "top": round(gap_top, digits), "bottom": round(gap_bottom, digits), "size_pips": round(gap_pips, 1), "candle_index": i}
             elif direction == "SHORT":
                 gap_top = c1['low']
                 gap_bottom = c3['high']
@@ -370,24 +408,17 @@ class StrategyEngine:
                     if gap_pips >= fvg_min_pips:
                         current_price = df.iloc[-1]['close']
                         if gap_bottom <= current_price <= gap_top:
-                            return {
-                                "type": "BEARISH",
-                                "top": round(gap_top, digits),
-                                "bottom": round(gap_bottom, digits),
-                                "size_pips": round(gap_pips, 1),
-                                "candle_index": i,
-                            }
+                            return {"type": "BEARISH", "top": round(gap_top, digits), "bottom": round(gap_bottom, digits), "size_pips": round(gap_pips, 1), "candle_index": i}
         return None
 
     # ═══════════════════════════════════════════════════════════
-    #  ORDER BLOCK DETECTION — Bonus
+    #  ORDER BLOCK DETECTION (Bonus)
     # ═══════════════════════════════════════════════════════════
 
     def _detect_order_block(self, symbol: str, df: pd.DataFrame, direction: str) -> dict:
-        """Detecta Order Blocks ICT — bonus de score."""
+        """Detecta Order Blocks ICT."""
         if direction is None or len(df) < 10:
             return None
-
         pip_value = self.params.get("pip_values", {}).get(symbol, 0.0001)
         digits = self.params.get("digits", {}).get(symbol, 5)
         ob_lookback = self.params.get("ob_lookback", 15)
@@ -407,16 +438,9 @@ class StrategyEngine:
                     if next_c['close'] > c['high']:
                         ob_level = body_bottom
                         dist = abs(current_price - ob_level) / pip_value
-                        if dist <= 10:
-                            return {
-                                "type": "BULLISH_OB",
-                                "level": round(ob_level, digits),
-                                "top": round(body_top, digits),
-                                "body_pips": round(body_size / pip_value, 1),
-                                "dist_to_price": round(dist, 1),
-                            }
+                        if dist <= 15:
+                            return {"type": "BULLISH_OB", "level": round(ob_level, digits), "top": round(body_top, digits), "body_pips": round(body_size / pip_value, 1), "dist_to_price": round(dist, 1)}
                     break
-
         elif direction == "SHORT":
             for i in range(len(recent) - 2, 1, -1):
                 c = recent.iloc[i]
@@ -428,20 +452,13 @@ class StrategyEngine:
                     if next_c['close'] < c['low']:
                         ob_level = body_top
                         dist = abs(current_price - ob_level) / pip_value
-                        if dist <= 10:
-                            return {
-                                "type": "BEARISH_OB",
-                                "level": round(ob_level, digits),
-                                "bottom": round(body_bottom, digits),
-                                "body_pips": round(body_size / pip_value, 1),
-                                "dist_to_price": round(dist, 1),
-                            }
+                        if dist <= 15:
+                            return {"type": "BEARISH_OB", "level": round(ob_level, digits), "bottom": round(body_bottom, digits), "body_pips": round(body_size / pip_value, 1), "dist_to_price": round(dist, 1)}
                     break
-
         return None
 
     # ═══════════════════════════════════════════════════════════
-    #  SWEEP DETECTION (alertas tempranas)
+    #  SWEEP DETECTION (alertas)
     # ═══════════════════════════════════════════════════════════
 
     def detect_sweep(self, symbol: str):
@@ -451,11 +468,13 @@ class StrategyEngine:
         if not self._check_sweep_cooldown(symbol):
             return None
 
-        df = self.data_feed.get_ohlc(symbol, num_candles=100)
+        pc = get_pair_config(symbol)
+        timeframe = pc["timeframe"]
+        df = self.data_feed.get_ohlc(symbol, num_candles=100, timeframe=timeframe)
         if df is None or len(df) < 50:
             return None
 
-        direction = self._detect_momentum(symbol, df)
+        direction = self._detect_momentum(symbol, df, pc)
         if direction is None:
             return None
 
@@ -483,7 +502,17 @@ class StrategyEngine:
     # ═══════════════════════════════════════════════════════════
 
     def _is_session_active(self, symbol: str) -> bool:
-        """Verifica si la sesion esta activa para el par."""
+        """XAUUSD siempre activo en sesion (24h market)."""
+        if symbol == "XAUUSD":
+            from datetime import datetime as dt
+            import pytz
+            now_utc = dt.now(pytz.utc)
+            # Solo descansar sabado completo
+            if now_utc.weekday() == 5 and now_utc.hour >= 21:
+                return False
+            if now_utc.weekday() == 6 and now_utc.hour < 21:
+                return False
+            return True
         from datetime import datetime as dt
         import pytz
         now_utc = dt.now(pytz.utc)
@@ -494,15 +523,8 @@ class StrategyEngine:
                 return True
         return False
 
-    def _check_signal_cooldown(self, symbol: str) -> bool:
-        """Cooldown de 2 minutos entre señales del mismo par."""
-        cooldown = 120  # v8.0: 2 minutos (era 300 = 5 min)
-        try:
-            from config import BOT
-            cooldown = BOT.get("min_timeframe_between_signals", 120)
-        except Exception:
-            pass
-
+    def _check_signal_cooldown(self, symbol: str, cooldown: int = 120) -> bool:
+        """Cooldown entre señales."""
         if symbol in self.last_signal_time:
             return (datetime.now() - self.last_signal_time[symbol]).total_seconds() >= cooldown
         return True
