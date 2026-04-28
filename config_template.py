@@ -94,6 +94,9 @@ STRATEGY = {
     },
 
     # ═══ MODO RANGO/LATERAL ═══
+    # Busca ganancias cortas (10-30 pips) consistentes
+    # R:R 1:1 (riesgo = ganancia) pero muchas operaciones ganadoras
+    # Comprar cuando esta barato (soporte), Vender cuando esta caro (resistencia)
     "range_mode": {
         "sr_lookback": 30,
         "zone_pips": 5,
@@ -102,7 +105,7 @@ STRATEGY = {
         "close_percentile": 70,
         "min_score": 4,
         "tp_pips": 20,
-        "sl_pips": 15,
+        "sl_pips": 20,
     },
 }
 
