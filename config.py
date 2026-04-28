@@ -100,12 +100,15 @@ AUTO_TRADE = True              # Activar ejecucion automatica en MT5
 AUTO_TRADE_VOLUME = 0.01       # Lotes por operacion
 
 # ─── REENTRADA AUTOMATICA v8.4 ─────────────────────────────
-# Abre UNA operacion extra a favor cuando la primera va ganando
-REENTRY_ENABLED = True          # Activar re-entrada
-REENTRY_MIN_PROFIT_PIPS = 5   # Minimo pips de ganancia para reentrar
-REENTRY_MAX_DISTANCE_PIPS = 30  # Maximo pips desde entrada original
-REENTRY_COOLDOWN_SECS = 120    # Segundos minimo entre entrada y re-entrada
-REENTRY_MAX_PER_SIGNAL = 1     # Maximo re-entradas por senal (1 = una extra)
+# Abre UNA operacion extra cuando el precio se devuelve
+# un poco (pullback) y muestra mecha de rechazo
+# → Reentrar al precio de descuento!
+REENTRY_ENABLED = True
+REENTRY_MIN_PULLBACK_PIPS = 3    # Minimo pips de pullback (descuento)
+REENTRY_MAX_PULLBACK_PIPS = 20   # Maximo pips de pullback (no mas)
+REENTRY_COOLDOWN_SECS = 90       # Segundos minimo despues de entrada
+REENTRY_MAX_PER_SIGNAL = 1        # Maximo re-entradas por senal
+REENTRY_WICK_MIN_RATIO = 1.5     # Minimo ratio mecha/cuerpo para rechazo
 
 # ─── BOT CONFIG v8.4 ────────────────────────────────────────
 BOT = {

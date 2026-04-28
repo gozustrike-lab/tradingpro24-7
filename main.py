@@ -53,12 +53,13 @@ TELEGRAM_CHANNEL_ID = getattr(config, 'TELEGRAM_CHANNEL_ID', None)
 AUTO_TRADE = getattr(config, 'AUTO_TRADE', True)
 AUTO_TRADE_VOLUME = getattr(config, 'AUTO_TRADE_VOLUME', 0.01)
 
-# ─── Re-entrada config ──────────────────────────────────────
+# ─── Re-entrada config (PULLBACK / DESCUENTO) ──────────────
 REENTRY_ENABLED = getattr(config, 'REENTRY_ENABLED', True)
-REENTRY_MIN_PROFIT_PIPS = getattr(config, 'REENTRY_MIN_PROFIT_PIPS', 5)
-REENTRY_MAX_DISTANCE_PIPS = getattr(config, 'REENTRY_MAX_DISTANCE_PIPS', 30)
-REENTRY_COOLDOWN_SECS = getattr(config, 'REENTRY_COOLDOWN_SECS', 120)
+REENTRY_MIN_PULLBACK_PIPS = getattr(config, 'REENTRY_MIN_PULLBACK_PIPS', 3)
+REENTRY_MAX_PULLBACK_PIPS = getattr(config, 'REENTRY_MAX_PULLBACK_PIPS', 20)
+REENTRY_COOLDOWN_SECS = getattr(config, 'REENTRY_COOLDOWN_SECS', 90)
 REENTRY_MAX_PER_SIGNAL = getattr(config, 'REENTRY_MAX_PER_SIGNAL', 1)
+REENTRY_WICK_MIN_RATIO = getattr(config, 'REENTRY_WICK_MIN_RATIO', 1.5)
 
 MAGIC_NUMBER = 24701
 
@@ -74,7 +75,7 @@ class TradingBot:
         logger.info("  Deteccion: ALCISTA / BAJISTA / LATERAL")
         logger.info("  XAUUSD: M5 dir + M1 entrada + S/R zones")
         logger.info("  Auto-ejecucion MT5: {}".format("ACTIVADA" if AUTO_TRADE else "DESACTIVADA"))
-        logger.info("  Re-entrada auto: {}".format("ACTIVADA ({} pips min)".format(REENTRY_MIN_PROFIT_PIPS) if REENTRY_ENABLED else "DESACTIVADA"))
+        logger.info("  Re-entrada auto: {}".format("ACTIVADA (pullback {}-{} pips)".format(REENTRY_MIN_PULLBACK_PIPS, REENTRY_MAX_PULLBACK_PIPS) if REENTRY_ENABLED else "DESACTIVADA"))
         logger.info("=" * 60)
 
         self.mt5 = MT5Connection()
@@ -135,8 +136,8 @@ class TradingBot:
                 pair_info.append("{}({})".format(p, tf))
 
         auto_status = "AUTO-TRADE ON ({} lotes)".format(AUTO_TRADE_VOLUME) if AUTO_TRADE else "SOLO SENALES (manual)"
-        reentry_status = "REENTRADA ON (+{} lote, min {} pips)".format(
-            AUTO_TRADE_VOLUME, REENTRY_MIN_PROFIT_PIPS) if REENTRY_ENABLED else "REENTRADA OFF"
+        reentry_status = "REENTRADA ON (pullback {}-{} pips + mecha)".format(
+            REENTRY_MIN_PULLBACK_PIPS, REENTRY_MAX_PULLBACK_PIPS) if REENTRY_ENABLED else "REENTRADA OFF"
         channel_status = "Canal activo" if TELEGRAM_CHANNEL_ID else "Canal no configurado"
 
         startup_msg = (
@@ -362,17 +363,28 @@ class TradingBot:
                 self.telegram.enviar_status("Trade fallo: {} {} | Revisar MT5".format(symbol, direction))
 
     # ═══════════════════════════════════════════════════════════
-    #  REENTRADA AUTOMATICA
+    #  REENTRADA AUTOMATICA — PULLBACK / DESCUENTO
     # ═══════════════════════════════════════════════════════════
 
     def _check_reentry(self, symbol: str):
         """
-        Verifica si un trade activo puede tener re-entrada.
+        Re-entrada cuando el precio se devuelve un poco EN CONTRA
+        y muestra señal de rechazo (mecha) en zona de favor.
+
+        Ejemplo:
+        - Entrada original: BUY @ 4595
+        - Precio sube a 4605
+        - Precio se devuelve a 4598 (pullback)
+        - En 4598 hay mecha de rechazo (compradores entrando)
+        - → REENTRADA BUY @ 4598 (precio de descuento!)
+
         Condiciones:
-        1. Trade activo en ganancia > REENTRY_MIN_PROFIT_PIPS pips
-        2. Tendencia sigue a favor (strategy confirma)
-        3. No se ha hecho re-entrada ya (o no se excede el maximo)
-        4. Tiempo minimo desde la entrada original
+        1. Trade activo abierto por el bot
+        2. No se ha hecho re-entrada ya
+        3. Tiempo minimo desde la entrada (90 seg)
+        4. Precio se ha devuelto entre 3-20 pips en contra (pullback)
+        5. Vela actual muestra MECHA DE RECHAZO a favor
+        6. EMA sigue confirmando la direccion original
         """
         if symbol not in self.active_trades:
             return
@@ -388,7 +400,7 @@ class TradingBot:
         if elapsed < REENTRY_COOLDOWN_SECS:
             return
 
-        # Obtener posicion actual
+        # Obtener datos del trade activo
         direction = trade["direction"]
         entry_price = trade["entry_price"]
         pip_value = STRATEGY.get("pip_values", {}).get(symbol, 0.0001)
@@ -400,50 +412,56 @@ class TradingBot:
 
         current_price = tick.ask if direction == "BUY" else tick.bid
 
-        # Calcular profit en pips
+        # ── Calcular pullback (precio devuelto EN CONTRA) ──
         if direction == "BUY":
-            profit_pips = (current_price - entry_price) / pip_value
+            pullback_pips = (entry_price - current_price) / pip_value
         else:
-            profit_pips = (entry_price - current_price) / pip_value
+            pullback_pips = (current_price - entry_price) / pip_value
 
-        # Verificar ganancia minima
-        if profit_pips < REENTRY_MIN_PROFIT_PIPS:
+        # El pullback debe ser NEGATIVO (precio en contra) pero no demasiado
+        # pullback_pips > 0 significa el precio esta debajo de la entrada (para BUY)
+        if pullback_pips < REENTRY_MIN_PULLBACK_PIPS:
+            # El precio no se ha devuelto lo suficiente, no hay descuento
             return
 
-        # Verificar que la distancia no es excesiva
-        if profit_pips > REENTRY_MAX_DISTANCE_PIPS:
-            logger.debug("[{}] Re-entrada: profit {} pips excede maximo {}".format(
-                symbol, round(profit_pips, 1), REENTRY_MAX_DISTANCE_PIPS))
+        if pullback_pips > REENTRY_MAX_PULLBACK_PIPS:
+            # El precio se devolvió demasiado, es peligroso reentrar
+            logger.debug("[{}] Re-entrada: pullback {} pips excede maximo {}".format(
+                symbol, round(pullback_pips, 1), REENTRY_MAX_PULLBACK_PIPS))
             return
 
-        # Verificar que la tendencia sigue a favor (confirmacion rapida)
+        # ── Verificar mecha de rechazo (señal de que el precio rebota) ──
         pc = get_pair_config(symbol)
         df = self.data_feed.get_ohlc(symbol, num_candles=50, timeframe=pc["timeframe"])
-        if df is None:
+        if df is None or len(df) < 5:
             return
 
-        trend_confirms = False
+        last_candle = df.iloc[-1]
+        wick_info = self._check_rejection_wick(last_candle, direction, pip_value)
+
+        if not wick_info["rejected"]:
+            # No hay mecha de rechazo, el precio sigue cayendo
+            return
+
+        # ── Verificar que EMA sigue confirmando direccion original ──
         if direction == "BUY":
-            trend_confirms = self._quick_bullish_check(df, pc)
+            trend_ok = self._quick_bullish_check(df, pc)
         else:
-            trend_confirms = self._quick_bearish_check(df, pc)
+            trend_ok = self._quick_bearish_check(df, pc)
 
-        if not trend_confirms:
-            logger.debug("[{}] Re-entrada: tendencia no confirma {}".format(symbol, direction))
+        if not trend_ok:
+            logger.debug("[{}] Re-entrada: EMA no confirma {} despues de pullback".format(
+                symbol, direction))
             return
 
-        # ═══ EJECUTAR REENTRADA ═══
-        logger.info("REENTRADA: {} {} | Profit: {} pips | Entrada original: {}".format(
-            symbol, direction, round(profit_pips, 1), entry_price))
+        # ═══ TODAS LAS CONDICIONES CUMPLIDAS — EJECUTAR REENTRADA ═══
+        logger.info("REENTRADA: {} {} | Pullback: -{} pips (descuento) | Mecha: {:.1f}x".format(
+            symbol, direction, round(pullback_pips, 1), wick_info["ratio"]))
 
-        # SL/TP para la re-entrada: mismo SL, TP ajustado al precio actual
-        sl_price = trade["sl_price"]
-        tp_price = trade["tp_price"]
-
-        # Ajustar SL al precio actual (mantener misma distancia en pips)
+        # SL/TP: ajustar al precio de re-entrada (descuento)
         digits = STRATEGY.get("digits", {}).get(symbol, 5)
-        original_sl_pips = abs(entry_price - sl_price) / pip_value
-        original_tp_pips = abs(tp_price - entry_price) / pip_value
+        original_sl_pips = abs(entry_price - trade["sl_price"]) / pip_value
+        original_tp_pips = abs(trade["tp_price"] - entry_price) / pip_value
 
         if direction == "BUY":
             new_sl = round(current_price - original_sl_pips * pip_value, digits)
@@ -455,29 +473,70 @@ class TradingBot:
         trade_result = self._execute_trade(symbol, direction, current_price, new_sl, new_tp, is_reentry=True)
         if trade_result:
             self.reentries_executed += 1
-            trade["reentry_done"] = True
             trade["reentry_count"] += 1
             order_id = trade_result.get("order", 0)
 
             msg = (
-                "REENTRADA EJECUTADA\n"
+                "REENTRADA EN DESCUENTO\n"
                 "{} {} @ {}\n"
-                "Trade original: {} @ {}\n"
-                "Profit original: +{} pips\n"
-                "SL re-entrada: {}\n"
-                "TP re-entrada: {}\n"
+                "Original: {} @ {}\n"
+                "Pullback: -{} pips (descuento!)\n"
+                "Mecha rechazo: {:.1f}x\n"
+                "SL: {}\n"
+                "TP: {}\n"
                 "Ticket: {}\n"
                 "Lotes: {}".format(
                     symbol, direction, current_price,
-                    direction, entry_price, round(profit_pips, 1),
+                    direction, entry_price, round(pullback_pips, 1),
+                    wick_info["ratio"],
                     new_sl, new_tp, order_id, AUTO_TRADE_VOLUME
                 )
             )
             self.telegram.enviar_status(msg)
-            logger.info("REENTRADA OK: {} {} @ {} | Ticket: {}".format(
-                symbol, direction, current_price, order_id))
+            logger.info("REENTRADA OK: {} {} @ {} (descuento -{} pips) | Ticket: {}".format(
+                symbol, direction, current_price, round(pullback_pips, 1), order_id))
         else:
             logger.warning("Re-entrada fallo: {} {}".format(symbol, direction))
+
+    def _check_rejection_wick(self, candle, direction: str, pip_value: float) -> dict:
+        """
+        Verifica si la vela actual tiene mecha de rechazo a favor.
+        Para BUY: mecha inferior grande = rechazo de vendedores
+        Para SELL: mecha superior grande = rechazo de compradores
+        """
+        o, h, l, c = candle['open'], candle['high'], candle['low'], candle['close']
+        body_top = max(o, c)
+        body_bottom = min(o, c)
+        body_size = body_top - body_bottom
+
+        if direction == "BUY":
+            # Mecha inferior (rechazo vendedores)
+            lower_wick = body_bottom - l
+            upper_wick = h - body_top
+            if lower_wick <= 0:
+                return {"rejected": False, "ratio": 0, "wick_pips": 0}
+            ratio = lower_wick / body_size if body_size > 0 else lower_wick / pip_value
+            wick_pips = lower_wick / pip_value
+            return {
+                "rejected": ratio >= REENTRY_WICK_MIN_RATIO or wick_pips >= 2,
+                "ratio": round(ratio, 2),
+                "wick_pips": round(wick_pips, 1),
+                "type": "lower_wick"
+            }
+        else:
+            # Mecha superior (rechazo compradores)
+            upper_wick = h - body_top
+            lower_wick = body_bottom - l
+            if upper_wick <= 0:
+                return {"rejected": False, "ratio": 0, "wick_pips": 0}
+            ratio = upper_wick / body_size if body_size > 0 else upper_wick / pip_value
+            wick_pips = upper_wick / pip_value
+            return {
+                "rejected": ratio >= REENTRY_WICK_MIN_RATIO or wick_pips >= 2,
+                "ratio": round(ratio, 2),
+                "wick_pips": round(wick_pips, 1),
+                "type": "upper_wick"
+            }
 
     def _quick_bullish_check(self, df, pc) -> bool:
         """Verificacion rapida de momento alcista."""
