@@ -57,7 +57,7 @@ RISK = {
     "rr_ratio": 1.0,
     "max_daily_trades": 15,
     "max_open_trades": 3,
-    "daily_loss_limit": 5.0,
+    "daily_loss_limit": 999.0,   # SIN LIMITE (modo pruebas)
 }
 
 RISK_PER_PAIR = {
